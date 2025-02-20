@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6
+- Remove now redundant `itoa` function
+
 ## 0.5
 - Fix compatibility with Flipper Zero firmware 0.74.2
 
