@@ -24,6 +24,7 @@
 #define AUTOFIRE_PRESET_FAST_MS 70U
 #define HIGH_CPS_CONFIRM_THRESHOLD_X10 120U
 #define UI_REFRESH_PERIOD_MS 250U
+#define EVENT_DRAIN_MAX_COUNT 32U
 
 typedef enum {
     EventTypeInput,
@@ -37,7 +38,10 @@ typedef enum {
 } ClickPhase;
 
 typedef enum {
-    AutofireModeLeftClick,
+    AutofireModeMouseLeftClick,
+    AutofireModeMouseRightClick,
+    AutofireModeKeyboardEnter,
+    AutofireModeKeyboardSpace,
 } AutofireMode;
 
 typedef enum {
@@ -74,7 +78,10 @@ typedef struct {
     bool adjust_hold_active;
     InputKey adjust_hold_key;
     uint16_t adjust_repeat_count;
+    bool mode_hold_active;
+    InputKey mode_hold_key;
     bool ok_long_handled;
+    bool back_long_handled;
     AutofireMode mode;
     AutofirePreset preset;
     ClickPhase click_phase;
@@ -148,10 +155,45 @@ static uint32_t usb_hid_autofire_config_cps_x10_for_delay(uint32_t delay_ms) {
 
 static const char* usb_hid_autofire_mode_label(AutofireMode mode) {
     switch(mode) {
-        case AutofireModeLeftClick:
-            return "Left Click";
+        case AutofireModeMouseLeftClick:
+            return "Mouse Left";
+        case AutofireModeMouseRightClick:
+            return "Mouse Right";
+        case AutofireModeKeyboardEnter:
+            return "Key Enter";
+        case AutofireModeKeyboardSpace:
+            return "Key Space";
         default:
             return "Unknown";
+    }
+}
+
+static AutofireMode usb_hid_autofire_next_mode(AutofireMode mode) {
+    switch(mode) {
+        case AutofireModeMouseLeftClick:
+            return AutofireModeMouseRightClick;
+        case AutofireModeMouseRightClick:
+            return AutofireModeKeyboardEnter;
+        case AutofireModeKeyboardEnter:
+            return AutofireModeKeyboardSpace;
+        case AutofireModeKeyboardSpace:
+        default:
+            return AutofireModeMouseLeftClick;
+    }
+}
+
+static AutofireMode usb_hid_autofire_prev_mode(AutofireMode mode) {
+    switch(mode) {
+        case AutofireModeMouseLeftClick:
+            return AutofireModeKeyboardSpace;
+        case AutofireModeMouseRightClick:
+            return AutofireModeMouseLeftClick;
+        case AutofireModeKeyboardEnter:
+            return AutofireModeMouseRightClick;
+        case AutofireModeKeyboardSpace:
+            return AutofireModeKeyboardEnter;
+        default:
+            return AutofireModeMouseLeftClick;
     }
 }
 
@@ -262,9 +304,9 @@ static void usb_hid_autofire_render_callback(Canvas* canvas, void* ctx) {
         canvas_set_font(canvas, FontSecondary);
         canvas_draw_str(canvas, 0, 22, "OK short: start/pause");
         canvas_draw_str(canvas, 0, 32, "OK long: cycle preset");
-        canvas_draw_str(canvas, 0, 42, "Left/Right: adjust delay");
-        canvas_draw_str(canvas, 0, 52, "Hold L/R: accelerate");
-        canvas_draw_str(canvas, 0, 63, "Up: close help  Back: exit");
+        canvas_draw_str(canvas, 0, 42, "U/D short+hold: mode");
+        canvas_draw_str(canvas, 0, 52, "L/R short+hold: delay");
+        canvas_draw_str(canvas, 0, 63, "Back short: close");
         return;
     }
 
@@ -289,7 +331,7 @@ static void usb_hid_autofire_render_callback(Canvas* canvas, void* ctx) {
     canvas_draw_str(canvas, 0, 32, mode_str);
     canvas_draw_str(canvas, 0, 42, preset_str);
     canvas_draw_str(canvas, 0, 52, delay_rate_str);
-    canvas_draw_str(canvas, 0, 63, "Up:help  Back:exit");
+    canvas_draw_str(canvas, 0, 63, "U/D:mode L/R:delay");
 }
 
 static void usb_hid_autofire_input_callback(InputEvent* input_event, void* ctx) {
@@ -325,14 +367,55 @@ static void usb_hid_autofire_schedule_next_tick(UsbHidAutofireApp* app) {
     furi_timer_start(app->click_timer, usb_hid_autofire_half_delay_ticks(app));
 }
 
-static void usb_hid_autofire_drain_event_queue(UsbHidAutofireApp* app) {
+static void usb_hid_autofire_drain_event_queue(UsbHidAutofireApp* app, uint8_t max_count) {
     UsbMouseEvent event;
-    while(furi_message_queue_get(app->event_queue, &event, 0) == FuriStatusOk) {
+    for(uint8_t i = 0; i < max_count; i++) {
+        if(furi_message_queue_get(app->event_queue, &event, 0) != FuriStatusOk) {
+            break;
+        }
     }
 }
 
 static void usb_hid_autofire_tick(UsbHidAutofireApp* app);
 static void usb_hid_autofire_stop(UsbHidAutofireApp* app);
+
+static void usb_hid_autofire_press_mode_control(UsbHidAutofireApp* app) {
+    switch(app->mode) {
+        case AutofireModeMouseLeftClick:
+            furi_hal_hid_mouse_press(HID_MOUSE_BTN_LEFT);
+            break;
+        case AutofireModeMouseRightClick:
+            furi_hal_hid_mouse_press(HID_MOUSE_BTN_RIGHT);
+            break;
+        case AutofireModeKeyboardEnter:
+            furi_hal_hid_kb_press(HID_KEYBOARD_RETURN);
+            break;
+        case AutofireModeKeyboardSpace:
+            furi_hal_hid_kb_press(HID_KEYBOARD_SPACEBAR);
+            break;
+        default:
+            break;
+    }
+}
+
+static void usb_hid_autofire_release_mode_control(UsbHidAutofireApp* app) {
+    switch(app->mode) {
+        case AutofireModeMouseLeftClick:
+            furi_hal_hid_mouse_release(HID_MOUSE_BTN_LEFT);
+            break;
+        case AutofireModeMouseRightClick:
+            furi_hal_hid_mouse_release(HID_MOUSE_BTN_RIGHT);
+            break;
+        case AutofireModeKeyboardEnter:
+            furi_hal_hid_kb_release(HID_KEYBOARD_RETURN);
+            break;
+        case AutofireModeKeyboardSpace:
+            furi_hal_hid_kb_release(HID_KEYBOARD_SPACEBAR);
+            break;
+        default:
+            break;
+    }
+}
 
 static void usb_hid_autofire_start(UsbHidAutofireApp* app) {
     app->active = true;
@@ -340,6 +423,27 @@ static void usb_hid_autofire_start(UsbHidAutofireApp* app) {
     usb_hid_autofire_reset_cps_tracking(app);
     furi_timer_start(app->ui_refresh_timer, furi_ms_to_ticks(UI_REFRESH_PERIOD_MS));
     usb_hid_autofire_tick(app);
+}
+
+static bool usb_hid_autofire_set_mode(UsbHidAutofireApp* app, AutofireMode new_mode) {
+    if(new_mode == app->mode) {
+        return false;
+    }
+
+    if(app->mouse_pressed) {
+        usb_hid_autofire_release_mode_control(app);
+        app->mouse_pressed = false;
+    }
+
+    app->mode = new_mode;
+    app->click_phase = ClickPhasePress;
+    if(app->active) {
+        furi_timer_stop(app->click_timer);
+        usb_hid_autofire_schedule_next_tick(app);
+    }
+    app->ui_dirty = true;
+
+    return true;
 }
 
 static bool usb_hid_autofire_set_delay(
@@ -406,9 +510,9 @@ static bool usb_hid_autofire_confirm_high_cps_preset(
     dialog_message_set_buttons(message, "No", NULL, "Yes");
 
     // Prevent stale buffered inputs from leaking into modal/result handling.
-    usb_hid_autofire_drain_event_queue(app);
+    usb_hid_autofire_drain_event_queue(app, EVENT_DRAIN_MAX_COUNT);
     DialogMessageButton result = dialog_message_show(app->dialogs, message);
-    usb_hid_autofire_drain_event_queue(app);
+    usb_hid_autofire_drain_event_queue(app, EVENT_DRAIN_MAX_COUNT);
     confirmed = (result == DialogMessageButtonRight);
     dialog_message_free(message);
 
@@ -482,6 +586,41 @@ static void usb_hid_autofire_handle_delay_input(UsbHidAutofireApp* app, const In
     }
 }
 
+static void usb_hid_autofire_handle_mode_input(UsbHidAutofireApp* app, const InputEvent* input) {
+    if((input->key != InputKeyUp) && (input->key != InputKeyDown)) {
+        return;
+    }
+
+    switch(input->type) {
+        case InputTypeShort:
+        case InputTypeLong:
+        case InputTypeRepeat: {
+            if((input->type == InputTypeLong) || (input->type == InputTypeRepeat)) {
+                if((!app->mode_hold_active) || (app->mode_hold_key != input->key)) {
+                    app->mode_hold_active = true;
+                    app->mode_hold_key = input->key;
+                }
+            }
+
+            AutofireMode next_mode =
+                (input->key == InputKeyUp) ? usb_hid_autofire_prev_mode(app->mode) :
+                                             usb_hid_autofire_next_mode(app->mode);
+            usb_hid_autofire_set_mode(app, next_mode);
+            break;
+        }
+
+        case InputTypeRelease:
+            if(app->mode_hold_active && (app->mode_hold_key == input->key)) {
+                app->mode_hold_active = false;
+                app->mode_hold_key = InputKeyMAX;
+            }
+            break;
+
+        default:
+            break;
+    }
+}
+
 static void usb_hid_autofire_stop(UsbHidAutofireApp* app) {
     app->active = false;
     app->click_phase = ClickPhasePress;
@@ -493,15 +632,19 @@ static void usb_hid_autofire_stop(UsbHidAutofireApp* app) {
     }
 
     if(app->mouse_pressed) {
-        furi_hal_hid_mouse_release(HID_MOUSE_BTN_LEFT);
+        usb_hid_autofire_release_mode_control(app);
         app->mouse_pressed = false;
     }
+    furi_hal_hid_kb_release_all();
 
     usb_hid_autofire_reset_cps_tracking(app);
     app->adjust_hold_active = false;
     app->adjust_hold_key = InputKeyMAX;
     app->adjust_repeat_count = 0U;
+    app->mode_hold_active = false;
+    app->mode_hold_key = InputKeyMAX;
     app->ok_long_handled = false;
+    app->back_long_handled = false;
 }
 
 static void usb_hid_autofire_tick(UsbHidAutofireApp* app) {
@@ -510,11 +653,11 @@ static void usb_hid_autofire_tick(UsbHidAutofireApp* app) {
     }
 
     if(app->click_phase == ClickPhasePress) {
-        furi_hal_hid_mouse_press(HID_MOUSE_BTN_LEFT);
+        usb_hid_autofire_press_mode_control(app);
         app->mouse_pressed = true;
         app->click_phase = ClickPhaseRelease;
     } else {
-        furi_hal_hid_mouse_release(HID_MOUSE_BTN_LEFT);
+        usb_hid_autofire_release_mode_control(app);
         app->mouse_pressed = false;
         usb_hid_autofire_record_click_release(app);
         app->click_phase = ClickPhasePress;
@@ -549,8 +692,11 @@ int32_t usb_hid_autofire_app(void* p) {
         .adjust_hold_active = false,
         .adjust_hold_key = InputKeyMAX,
         .adjust_repeat_count = 0U,
+        .mode_hold_active = false,
+        .mode_hold_key = InputKeyMAX,
         .ok_long_handled = false,
-        .mode = AutofireModeLeftClick,
+        .back_long_handled = false,
+        .mode = AutofireModeMouseLeftClick,
         .preset = AutofirePresetCustom,
         .click_phase = ClickPhasePress,
     };
@@ -628,12 +774,33 @@ int32_t usb_hid_autofire_app(void* p) {
             }
         } else if(event.type == EventTypeInput) {
             if(event.input.key == InputKeyBack) {
-                break;
+                if(event.input.type == InputTypeLong) {
+                    app.show_help = true;
+                    app.back_long_handled = true;
+                    app.ui_dirty = true;
+                    continue;
+                }
+
+                if(event.input.type == InputTypeRelease) {
+                    if(app.back_long_handled) {
+                        app.back_long_handled = false;
+                        continue;
+                    }
+                    if(app.show_help) {
+                        app.show_help = false;
+                        app.ui_dirty = true;
+                        continue;
+                    }
+                    break;
+                }
             }
 
-            if((event.input.key == InputKeyUp) && (event.input.type == InputTypeRelease)) {
-                app.show_help = !app.show_help;
-                app.ui_dirty = true;
+            if(app.show_help) {
+                continue;
+            }
+
+            if((event.input.key == InputKeyUp) || (event.input.key == InputKeyDown)) {
+                usb_hid_autofire_handle_mode_input(&app, &event.input);
                 continue;
             }
 

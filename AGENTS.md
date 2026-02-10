@@ -6,14 +6,14 @@ This file captures the key technical findings about this repository and the high
 ## Project Snapshot
 - Name: `usb_hid_autofire`
 - Platform: Flipper Zero external app (`.fap`)
-- Primary behavior: emulate USB HID mouse and generate repeated left-click events
+- Primary behavior: emulate USB HID and generate repeated selected events (mouse left/right click or keyboard Enter/Space)
 - Entry point: `usb_hid_autofire_app` in `usb_hid_autofire.c`
 - App manifest: `application.fam`
 - Current version: `0.6` (`version.h`)
 
 ## Critical Invariants
 - Always restore the previous USB configuration before app exit.
-- Never leave mouse left button pressed when exiting or on failure.
+- Never leave any fired control pressed (mouse button or keyboard key) when exiting or on failure.
 - Keep `Back` key exit reliable regardless of autofire state.
 - Do not block UI/input handling long enough to make stop controls feel laggy.
 
@@ -29,21 +29,26 @@ This file captures the key technical findings about this repository and the high
    - toggles autofire on `OK` short release,
    - cycles presets on `OK` long press (slow/medium/fast),
    - opens built-in Flipper modal dialog for very high-CPS preset confirmation,
+   - cycles fire mode on `Up/Down` short press and hold-repeat (`Up` backward, `Down` forward),
    - adjusts delay with `Left/Right` short press and long-press acceleration (`Long`/`Repeat`),
-   - toggles help screen on `Up` release,
-   - exits on `Back`,
+   - opens help screen on `Back` long press,
+   - closes help screen on `Back` short release (without exiting),
+   - exits on `Back` short release from main screen,
    - redraws viewport only when UI-visible state changes.
-6. On toggle off / exit, app stops timers and releases left mouse button if needed.
+6. On toggle off / exit, app stops timers and releases any active fired control (mouse button or keyboard key) if needed.
 7. On exit it restores previous USB config and frees resources.
 
 ## Control Model
 - `OK` short: toggle active/inactive
 - `OK` long: cycle presets (`Slow` -> `Medium` -> `Fast` -> ...)
 - `OK` confirm: apply pending high-CPS preset when confirmation prompt is shown
+- `Up`: cycle fired event mode backward (`Key Space` <- `Key Enter` <- `Mouse Right` <- `Mouse Left`)
+- `Down`: cycle fired event mode forward (`Mouse Left` -> `Mouse Right` -> `Key Enter` -> `Key Space`)
 - `Left`: decrease delay with acceleration while held (clamped at 5 ms)
 - `Right`: increase delay with acceleration while held (clamped at 10000 ms)
-- `Up`: toggle help screen
-- `Back`: exit app
+- `Back` long: open help screen
+- `Back` short on help: close help screen
+- `Back` short on main: exit app
 
 ## Timing Model (Current)
 - Delay variable is now bounded to `5..10000 ms`.
@@ -74,7 +79,9 @@ This file captures the key technical findings about this repository and the high
 - No persisted settings across app launches.
 - `tools.c` contains `strrev` that is currently unused.
 - High-CPS preset confirmation uses built-in modal dialogs, but settings are still non-persistent.
-- Main view is compact; help details are moved to a dedicated help screen (`Up`).
+- Modal confirmation path now uses bounded input-queue draining to avoid long-press repeat deadlock before dialog show.
+- Main view is compact; help is now a dedicated screen opened by `Back` long press.
+- Fire engine now supports both mouse and keyboard events with release-on-stop safety.
 
 ## Priority Improvements (Critical First)
 
@@ -113,12 +120,13 @@ This file captures the key technical findings about this repository and the high
 - Manual smoke checklist:
   - App opens and renders status/version.
   - `OK` toggles active/inactive.
+  - `Up/Down` cycle fired event mode (including hold repeat) and selected mode is shown on screen.
   - `Left/Right` short press adjusts delay by one step, hold accelerates, and values clamp at `5..10000 ms`.
   - `OK` long cycles presets and `Fast` preset requires explicit confirmation.
-  - `Up` opens/closes help screen with controls summary.
-  - While active, host receives repeated left clicks.
-  - `Back` exits immediately and USB behavior returns to pre-app mode.
-  - After exit, no stuck mouse button state on host.
+  - `Back` long opens help screen; `Back` short in help closes help; `Back` short in main exits app.
+  - While active, host receives repeated events for selected mode (`Mouse Left/Right`, `Enter`, `Space`).
+  - `Back` short in main exits immediately and USB behavior returns to pre-app mode.
+  - After exit, no stuck mouse button or keyboard key state on host.
 
 ## Compatibility Notes
 - Changelog records compatibility fix for Flipper firmware `0.74.2`.
