@@ -45,8 +45,8 @@ This file captures the key technical findings about this repository and the high
 - Total cycle is approximately `autofire_delay` ms (integer rounding by half-split applies).
 
 ## Failure Modes To Design For
-- USB HID config switch can fail; current code uses `furi_check(...)` and abort-like behavior.
-- Early returns or future error branches can skip cleanup if not centralized.
+- USB HID config switch can fail; current code now routes setup failures through centralized cleanup.
+- Cleanup is centralized for setup failures and normal exit, reducing leak/regression risk from early returns.
 - Any crash while pressed can leave host with a perceived held button unless release-on-exit is enforced.
 
 ## Numeric Safety Notes
@@ -66,9 +66,9 @@ This file captures the key technical findings about this repository and the high
 ### P0 (Stability + Performance)
 1. [Done] Replace delay-based busy loop with timer-driven state machine.
 2. [Done] Clamp delay to safe range (`5..1000 ms`).
-3. Ensure all exit/error paths restore USB config and release resources.
+3. [Done] Ensure all exit/error paths restore USB config and release resources.
 4. Reduce unnecessary redraw frequency (update only on state change or low-rate refresh tick).
-5. Centralize cleanup in one path (`goto cleanup` pattern) to prevent leak/regression branches.
+5. [Done] Centralize cleanup in one path (`goto cleanup` pattern) to prevent leak/regression branches.
 
 ### P1 (User Experience)
 1. Show clearer status: `ACTIVE/PAUSED`, effective CPS, delay, and selected mode.
@@ -115,11 +115,10 @@ This file captures the key technical findings about this repository and the high
 - Existing control contract (`OK`, `Left`, `Right`, `Back`) is preserved unless intentionally changed and documented.
 
 ## Suggested Implementation Order
-1. Centralize cleanup for all setup/exit/error paths.
-2. Reduce redraw frequency (state-change driven or low-rate refresh).
-3. Integrate richer status UI + CPS display.
-4. Add persistent settings.
-5. Refactor into modules and delete unused code.
+1. Reduce redraw frequency (state-change driven or low-rate refresh).
+2. Integrate richer status UI + CPS display.
+3. Add persistent settings.
+4. Refactor into modules and delete unused code.
 
 ## Notes for Future Agents
 - Prefer preserving current user-facing controls unless explicitly changing UX.

@@ -5,6 +5,8 @@
 #include <input/input.h>
 #include "version.h"
 
+#define TAG "usb_hid_autofire"
+
 // Uncomment to be able to make a screenshot
 //#define USB_HID_AUTOFIRE_SCREENSHOT
 
@@ -130,7 +132,9 @@ static void usb_hid_autofire_schedule_next_tick(UsbHidAutofireApp* app) {
 static void usb_hid_autofire_stop(UsbHidAutofireApp* app) {
     app->active = false;
     app->click_phase = ClickPhasePress;
-    furi_timer_stop(app->click_timer);
+    if(app->click_timer) {
+        furi_timer_stop(app->click_timer);
+    }
 
     if(app->mouse_pressed) {
         furi_hal_hid_mouse_release(HID_MOUSE_BTN_LEFT);
@@ -158,6 +162,11 @@ static void usb_hid_autofire_tick(UsbHidAutofireApp* app) {
 
 int32_t usb_hid_autofire_app(void* p) {
     UNUSED(p);
+    int32_t ret = -1;
+    bool gui_opened = false;
+    bool view_port_added = false;
+    bool usb_switched = false;
+
     UsbHidAutofireApp app = {
         .event_queue = NULL,
         .view_port = NULL,
@@ -173,16 +182,31 @@ int32_t usb_hid_autofire_app(void* p) {
     app.autofire_delay_ms = usb_hid_autofire_delay_clamp(app.autofire_delay_ms);
 
     app.event_queue = furi_message_queue_alloc(16, sizeof(UsbMouseEvent));
-    furi_check(app.event_queue);
+    if(!app.event_queue) {
+        FURI_LOG_E(TAG, "Failed to allocate event queue");
+        goto cleanup;
+    }
+
     app.view_port = view_port_alloc();
-    furi_check(app.view_port);
+    if(!app.view_port) {
+        FURI_LOG_E(TAG, "Failed to allocate viewport");
+        goto cleanup;
+    }
+
     app.click_timer = furi_timer_alloc(usb_hid_autofire_timer_callback, FuriTimerTypeOnce, &app);
-    furi_check(app.click_timer);
+    if(!app.click_timer) {
+        FURI_LOG_E(TAG, "Failed to allocate timer");
+        goto cleanup;
+    }
 
     app.usb_mode_prev = furi_hal_usb_get_config();
 #ifndef USB_HID_AUTOFIRE_SCREENSHOT
     furi_hal_usb_unlock();
-    furi_check(furi_hal_usb_set_config(&usb_hid, NULL) == true);
+    if(!furi_hal_usb_set_config(&usb_hid, NULL)) {
+        FURI_LOG_E(TAG, "Failed to switch USB to HID mode");
+        goto cleanup;
+    }
+    usb_switched = true;
 #endif
 
     view_port_draw_callback_set(app.view_port, usb_hid_autofire_render_callback, &app);
@@ -190,7 +214,13 @@ int32_t usb_hid_autofire_app(void* p) {
 
     // Open GUI and register view_port
     app.gui = furi_record_open(RECORD_GUI);
+    if(!app.gui) {
+        FURI_LOG_E(TAG, "Failed to open GUI record");
+        goto cleanup;
+    }
+    gui_opened = true;
     gui_add_view_port(app.gui, app.view_port, GuiLayerFullscreen);
+    view_port_added = true;
 
     UsbMouseEvent event;
     while(1) {
@@ -253,14 +283,37 @@ int32_t usb_hid_autofire_app(void* p) {
         view_port_update(app.view_port);
     }
 
+    ret = 0;
+
+cleanup:
     usb_hid_autofire_stop(&app);
-    furi_hal_usb_set_config(app.usb_mode_prev, NULL);
+
+#ifndef USB_HID_AUTOFIRE_SCREENSHOT
+    if(usb_switched) {
+        furi_hal_usb_set_config(app.usb_mode_prev, NULL);
+    }
+#endif
 
     // remove & free all stuff created by app
-    gui_remove_view_port(app.gui, app.view_port);
-    view_port_free(app.view_port);
-    furi_message_queue_free(app.event_queue);
-    furi_timer_free(app.click_timer);
+    if(view_port_added && app.gui && app.view_port) {
+        gui_remove_view_port(app.gui, app.view_port);
+    }
 
-    return 0;
+    if(app.click_timer) {
+        furi_timer_free(app.click_timer);
+    }
+
+    if(app.view_port) {
+        view_port_free(app.view_port);
+    }
+
+    if(app.event_queue) {
+        furi_message_queue_free(app.event_queue);
+    }
+
+    if(gui_opened) {
+        furi_record_close(RECORD_GUI);
+    }
+
+    return ret;
 }
