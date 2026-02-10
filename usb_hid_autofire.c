@@ -40,6 +40,7 @@ typedef struct {
     FuriHalUsbInterface* usb_mode_prev;
     bool active;
     bool mouse_pressed;
+    bool ui_dirty;
     uint32_t autofire_delay_ms;
     ClickPhase click_phase;
 } UsbHidAutofireApp;
@@ -175,6 +176,7 @@ int32_t usb_hid_autofire_app(void* p) {
         .usb_mode_prev = NULL,
         .active = false,
         .mouse_pressed = false,
+        .ui_dirty = true,
         .autofire_delay_ms = AUTOFIRE_DELAY_DEFAULT_MS,
         .click_phase = ClickPhasePress,
     };
@@ -221,23 +223,25 @@ int32_t usb_hid_autofire_app(void* p) {
     gui_opened = true;
     gui_add_view_port(app.gui, app.view_port, GuiLayerFullscreen);
     view_port_added = true;
+    view_port_update(app.view_port);
+    app.ui_dirty = false;
 
     UsbMouseEvent event;
     while(1) {
-        FuriStatus event_status = furi_message_queue_get(app.event_queue, &event, 50);
+        FuriStatus event_status = furi_message_queue_get(app.event_queue, &event, FuriWaitForever);
 
-        if(event_status == FuriStatusOk) {
-            if(event.type == EventTypeTick) {
-                usb_hid_autofire_tick(&app);
-            } else if(event.type == EventTypeInput) {
-                if(event.input.key == InputKeyBack) {
-                    break;
-                }
+        if(event_status != FuriStatusOk) {
+            continue;
+        }
 
-                if(event.input.type != InputTypeRelease) {
-                    continue;
-                }
+        if(event.type == EventTypeTick) {
+            usb_hid_autofire_tick(&app);
+        } else if(event.type == EventTypeInput) {
+            if(event.input.key == InputKeyBack) {
+                break;
+            }
 
+            if(event.input.type == InputTypeRelease) {
                 switch(event.input.key) {
                     case InputKeyOk:
                         if(app.active) {
@@ -247,6 +251,7 @@ int32_t usb_hid_autofire_app(void* p) {
                             app.click_phase = ClickPhasePress;
                             usb_hid_autofire_tick(&app);
                         }
+                        app.ui_dirty = true;
                         break;
                     case InputKeyLeft:
                         {
@@ -258,6 +263,7 @@ int32_t usb_hid_autofire_app(void* p) {
                                     furi_timer_stop(app.click_timer);
                                     usb_hid_autofire_schedule_next_tick(&app);
                                 }
+                                app.ui_dirty = true;
                             }
                         }
                         break;
@@ -271,6 +277,7 @@ int32_t usb_hid_autofire_app(void* p) {
                                     furi_timer_stop(app.click_timer);
                                     usb_hid_autofire_schedule_next_tick(&app);
                                 }
+                                app.ui_dirty = true;
                             }
                         }
                         break;
@@ -280,7 +287,10 @@ int32_t usb_hid_autofire_app(void* p) {
             }
         }
 
-        view_port_update(app.view_port);
+        if(app.ui_dirty) {
+            view_port_update(app.view_port);
+            app.ui_dirty = false;
+        }
     }
 
     ret = 0;

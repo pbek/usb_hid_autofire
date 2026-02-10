@@ -23,11 +23,12 @@ This file captures the key technical findings about this repository and the high
 3. Input callback pushes key events into queue.
 4. Timer callback pushes tick events into the same queue.
 5. Main loop:
-   - polls event queue (`50 ms` timeout),
+   - blocks on event queue (`FuriWaitForever`),
    - handles timer ticks by advancing click phase (`press`/`release`) and re-arming timer,
    - toggles autofire on `OK` release,
    - adjusts delay with `Left/Right` release,
-   - exits on `Back`.
+   - exits on `Back`,
+   - redraws viewport only when UI-visible state changes.
 6. On toggle off / exit, app stops timer and releases left mouse button if needed.
 7. On exit it restores previous USB config and frees resources.
 
@@ -57,6 +58,7 @@ This file captures the key technical findings about this repository and the high
 ## Findings: Risks / Technical Debt
 - Delay-based busy-wait was removed; timer callback now drives click phases via queued tick events.
 - Delay is now clamped to `5..1000 ms`; runaway/unbounded delay behavior is removed.
+- Unconditional per-loop redraw was removed; rendering is state-change driven.
 - No persisted settings across app launches.
 - `tools.c` contains `strrev` that is currently unused.
 - UI communicates basics but lacks richer status and guardrails for extreme rates.
@@ -67,7 +69,7 @@ This file captures the key technical findings about this repository and the high
 1. [Done] Replace delay-based busy loop with timer-driven state machine.
 2. [Done] Clamp delay to safe range (`5..1000 ms`).
 3. [Done] Ensure all exit/error paths restore USB config and release resources.
-4. Reduce unnecessary redraw frequency (update only on state change or low-rate refresh tick).
+4. [Done] Reduce unnecessary redraw frequency (update only on state change or low-rate refresh tick).
 5. [Done] Centralize cleanup in one path (`goto cleanup` pattern) to prevent leak/regression branches.
 
 ### P1 (User Experience)
@@ -115,10 +117,9 @@ This file captures the key technical findings about this repository and the high
 - Existing control contract (`OK`, `Left`, `Right`, `Back`) is preserved unless intentionally changed and documented.
 
 ## Suggested Implementation Order
-1. Reduce redraw frequency (state-change driven or low-rate refresh).
-2. Integrate richer status UI + CPS display.
-3. Add persistent settings.
-4. Refactor into modules and delete unused code.
+1. Integrate richer status UI + CPS display.
+2. Add persistent settings.
+3. Refactor into modules and delete unused code.
 
 ## Notes for Future Agents
 - Prefer preserving current user-facing controls unless explicitly changing UX.
