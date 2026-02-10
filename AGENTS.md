@@ -30,6 +30,7 @@ This file captures the key technical findings about this repository and the high
    - cycles presets on `OK` long press (slow/medium/fast),
    - opens built-in Flipper modal dialog for very high-CPS preset confirmation,
    - adjusts delay with `Left/Right` short press and long-press acceleration (`Long`/`Repeat`),
+   - toggles help screen on `Up` release,
    - exits on `Back`,
    - redraws viewport only when UI-visible state changes.
 6. On toggle off / exit, app stops timers and releases left mouse button if needed.
@@ -41,6 +42,7 @@ This file captures the key technical findings about this repository and the high
 - `OK` confirm: apply pending high-CPS preset when confirmation prompt is shown
 - `Left`: decrease delay with acceleration while held (clamped at 5 ms)
 - `Right`: increase delay with acceleration while held (clamped at 10000 ms)
+- `Up`: toggle help screen
 - `Back`: exit app
 
 ## Timing Model (Current)
@@ -72,6 +74,7 @@ This file captures the key technical findings about this repository and the high
 - No persisted settings across app launches.
 - `tools.c` contains `strrev` that is currently unused.
 - High-CPS preset confirmation uses built-in modal dialogs, but settings are still non-persistent.
+- Main view is compact; help details are moved to a dedicated help screen (`Up`).
 
 ## Priority Improvements (Critical First)
 
@@ -112,6 +115,7 @@ This file captures the key technical findings about this repository and the high
   - `OK` toggles active/inactive.
   - `Left/Right` short press adjusts delay by one step, hold accelerates, and values clamp at `5..10000 ms`.
   - `OK` long cycles presets and `Fast` preset requires explicit confirmation.
+  - `Up` opens/closes help screen with controls summary.
   - While active, host receives repeated left clicks.
   - `Back` exits immediately and USB behavior returns to pre-app mode.
   - After exit, no stuck mouse button state on host.

@@ -66,6 +66,7 @@ typedef struct {
     bool active;
     bool mouse_pressed;
     bool ui_dirty;
+    bool show_help;
     uint32_t autofire_delay_ms;
     uint32_t realtime_cps_x10;
     uint32_t last_click_release_tick_ms;
@@ -246,17 +247,37 @@ static uint32_t usb_hid_autofire_realtime_cps_x10(const UsbHidAutofireApp* app) 
 
 static void usb_hid_autofire_render_callback(Canvas* canvas, void* ctx) {
     UsbHidAutofireApp* app = ctx;
-    char preset_str[24];
+    char status_str[24];
     char mode_str[24];
-    char delay_str[24];
+    char preset_str[24];
+    char delay_rate_str[40];
     char cps_str[24];
 
-    snprintf(preset_str, sizeof(preset_str), "Preset: %s", usb_hid_autofire_preset_label(app->preset));
-    snprintf(mode_str, sizeof(mode_str), "Mode: %s", usb_hid_autofire_mode_label(app->mode));
-    snprintf(delay_str, sizeof(delay_str), "Delay: %lu ms", (unsigned long)app->autofire_delay_ms);
-    usb_hid_autofire_format_cps(cps_str, sizeof(cps_str), app->realtime_cps_x10);
-
     canvas_clear(canvas);
+
+    if(app->show_help) {
+        canvas_set_font(canvas, FontPrimary);
+        canvas_draw_str(canvas, 0, 10, "Autofire Help");
+
+        canvas_set_font(canvas, FontSecondary);
+        canvas_draw_str(canvas, 0, 22, "OK short: start/pause");
+        canvas_draw_str(canvas, 0, 32, "OK long: cycle preset");
+        canvas_draw_str(canvas, 0, 42, "Left/Right: adjust delay");
+        canvas_draw_str(canvas, 0, 52, "Hold L/R: accelerate");
+        canvas_draw_str(canvas, 0, 63, "Up: close help  Back: exit");
+        return;
+    }
+
+    snprintf(status_str, sizeof(status_str), "Status: %s", app->active ? "ACTIVE" : "PAUSED");
+    snprintf(mode_str, sizeof(mode_str), "Mode: %s", usb_hid_autofire_mode_label(app->mode));
+    snprintf(preset_str, sizeof(preset_str), "Preset: %s", usb_hid_autofire_preset_label(app->preset));
+    usb_hid_autofire_format_cps(cps_str, sizeof(cps_str), app->realtime_cps_x10);
+    snprintf(
+        delay_rate_str,
+        sizeof(delay_rate_str),
+        "Delay:%lums  Rate:%s",
+        (unsigned long)app->autofire_delay_ms,
+        cps_str);
 
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 0, 10, "USB HID Autofire");
@@ -264,13 +285,11 @@ static void usb_hid_autofire_render_callback(Canvas* canvas, void* ctx) {
     canvas_draw_str(canvas, 96, 10, VERSION);
 
     canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str(canvas, 0, 22, app->active ? "Status: ACTIVE" : "Status: PAUSED");
+    canvas_draw_str(canvas, 0, 22, status_str);
     canvas_draw_str(canvas, 0, 32, mode_str);
     canvas_draw_str(canvas, 0, 42, preset_str);
-    canvas_draw_str(canvas, 0, 52, delay_str);
-    canvas_draw_str(canvas, 0, 63, "Rate:");
-    canvas_draw_str(canvas, 32, 63, cps_str);
-    canvas_draw_str(canvas, 62, 63, "CPS");
+    canvas_draw_str(canvas, 0, 52, delay_rate_str);
+    canvas_draw_str(canvas, 0, 63, "Up:help  Back:exit");
 }
 
 static void usb_hid_autofire_input_callback(InputEvent* input_event, void* ctx) {
@@ -522,6 +541,7 @@ int32_t usb_hid_autofire_app(void* p) {
         .active = false,
         .mouse_pressed = false,
         .ui_dirty = true,
+        .show_help = false,
         .autofire_delay_ms = AUTOFIRE_DELAY_DEFAULT_MS,
         .realtime_cps_x10 = 0U,
         .last_click_release_tick_ms = 0U,
@@ -609,6 +629,12 @@ int32_t usb_hid_autofire_app(void* p) {
         } else if(event.type == EventTypeInput) {
             if(event.input.key == InputKeyBack) {
                 break;
+            }
+
+            if((event.input.key == InputKeyUp) && (event.input.type == InputTypeRelease)) {
+                app.show_help = !app.show_help;
+                app.ui_dirty = true;
+                continue;
             }
 
             if((event.input.key == InputKeyLeft) || (event.input.key == InputKeyRight)) {
