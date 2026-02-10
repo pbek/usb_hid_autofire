@@ -8,6 +8,11 @@
 // Uncomment to be able to make a screenshot
 //#define USB_HID_AUTOFIRE_SCREENSHOT
 
+#define AUTOFIRE_DELAY_MIN_MS 5U
+#define AUTOFIRE_DELAY_MAX_MS 1000U
+#define AUTOFIRE_DELAY_STEP_MS 10U
+#define AUTOFIRE_DELAY_DEFAULT_MS 10U
+
 typedef enum {
     EventTypeInput,
     EventTypeTick,
@@ -36,6 +41,44 @@ typedef struct {
     uint32_t autofire_delay_ms;
     ClickPhase click_phase;
 } UsbHidAutofireApp;
+
+static uint32_t usb_hid_autofire_delay_clamp(uint32_t delay_ms) {
+    if(delay_ms < AUTOFIRE_DELAY_MIN_MS) {
+        return AUTOFIRE_DELAY_MIN_MS;
+    }
+
+    if(delay_ms > AUTOFIRE_DELAY_MAX_MS) {
+        return AUTOFIRE_DELAY_MAX_MS;
+    }
+
+    return delay_ms;
+}
+
+static uint32_t usb_hid_autofire_delay_decrease(uint32_t delay_ms) {
+    delay_ms = usb_hid_autofire_delay_clamp(delay_ms);
+    if(delay_ms <= AUTOFIRE_DELAY_MIN_MS) {
+        return AUTOFIRE_DELAY_MIN_MS;
+    }
+
+    if((delay_ms - AUTOFIRE_DELAY_MIN_MS) < AUTOFIRE_DELAY_STEP_MS) {
+        return AUTOFIRE_DELAY_MIN_MS;
+    }
+
+    return delay_ms - AUTOFIRE_DELAY_STEP_MS;
+}
+
+static uint32_t usb_hid_autofire_delay_increase(uint32_t delay_ms) {
+    delay_ms = usb_hid_autofire_delay_clamp(delay_ms);
+    if(delay_ms >= AUTOFIRE_DELAY_MAX_MS) {
+        return AUTOFIRE_DELAY_MAX_MS;
+    }
+
+    if((AUTOFIRE_DELAY_MAX_MS - delay_ms) < AUTOFIRE_DELAY_STEP_MS) {
+        return AUTOFIRE_DELAY_MAX_MS;
+    }
+
+    return delay_ms + AUTOFIRE_DELAY_STEP_MS;
+}
 
 static void usb_hid_autofire_render_callback(Canvas* canvas, void* ctx) {
     UsbHidAutofireApp* app = ctx;
@@ -123,9 +166,11 @@ int32_t usb_hid_autofire_app(void* p) {
         .usb_mode_prev = NULL,
         .active = false,
         .mouse_pressed = false,
-        .autofire_delay_ms = 10,
+        .autofire_delay_ms = AUTOFIRE_DELAY_DEFAULT_MS,
         .click_phase = ClickPhasePress,
     };
+
+    app.autofire_delay_ms = usb_hid_autofire_delay_clamp(app.autofire_delay_ms);
 
     app.event_queue = furi_message_queue_alloc(16, sizeof(UsbMouseEvent));
     furi_check(app.event_queue);
@@ -174,19 +219,29 @@ int32_t usb_hid_autofire_app(void* p) {
                         }
                         break;
                     case InputKeyLeft:
-                        if(app.autofire_delay_ms > 0) {
-                            app.autofire_delay_ms -= 10;
-                            if(app.active) {
-                                furi_timer_stop(app.click_timer);
-                                usb_hid_autofire_schedule_next_tick(&app);
+                        {
+                            uint32_t new_delay_ms =
+                                usb_hid_autofire_delay_decrease(app.autofire_delay_ms);
+                            if(new_delay_ms != app.autofire_delay_ms) {
+                                app.autofire_delay_ms = new_delay_ms;
+                                if(app.active) {
+                                    furi_timer_stop(app.click_timer);
+                                    usb_hid_autofire_schedule_next_tick(&app);
+                                }
                             }
                         }
                         break;
                     case InputKeyRight:
-                        app.autofire_delay_ms += 10;
-                        if(app.active) {
-                            furi_timer_stop(app.click_timer);
-                            usb_hid_autofire_schedule_next_tick(&app);
+                        {
+                            uint32_t new_delay_ms =
+                                usb_hid_autofire_delay_increase(app.autofire_delay_ms);
+                            if(new_delay_ms != app.autofire_delay_ms) {
+                                app.autofire_delay_ms = new_delay_ms;
+                                if(app.active) {
+                                    furi_timer_stop(app.click_timer);
+                                    usb_hid_autofire_schedule_next_tick(&app);
+                                }
+                            }
                         }
                         break;
                     default:

@@ -33,16 +33,16 @@ This file captures the key technical findings about this repository and the high
 
 ## Control Model
 - `OK`: toggle active/inactive
-- `Left`: decrease delay by 10 ms (down to 0)
-- `Right`: increase delay by 10 ms (unbounded)
+- `Left`: decrease delay by 10 ms (clamped at 5 ms)
+- `Right`: increase delay by 10 ms (clamped at 1000 ms)
 - `Back`: exit app
 
 ## Timing Model (Current)
-- Delay variable is shown as milliseconds and applied as two timer halves:
+- Delay variable is now bounded to `5..1000 ms`.
+- Click scheduling uses two timer halves:
   - `half_delay_ms = autofire_delay / 2`
-  - each half is clamped to at least `1 ms` tick
-- Total cycle is approximately `2 * max(1, autofire_delay / 2)` ms.
-- `delay=0` no longer creates an effectively unthrottled busy loop; max practical rate is now bounded by timer tick granularity.
+  - fallback clamp to at least `1 ms` tick remains as a defensive guard
+- Total cycle is approximately `autofire_delay` ms (integer rounding by half-split applies).
 
 ## Failure Modes To Design For
 - USB HID config switch can fail; current code uses `furi_check(...)` and abort-like behavior.
@@ -50,14 +50,13 @@ This file captures the key technical findings about this repository and the high
 - Any crash while pressed can leave host with a perceived held button unless release-on-exit is enforced.
 
 ## Numeric Safety Notes
-- `autofire_delay` is `uint32_t` and currently increases without an upper bound.
+- `autofire_delay` is `uint32_t` and is clamped to `5..1000 ms`.
 - Direct microsecond multiply overflow risk was removed with timer-based scheduling.
-- Future changes should define and enforce explicit bounds, then perform checked/saturated math.
+- Delay adjustments now use saturating logic for both decrement and increment paths.
 
 ## Findings: Risks / Technical Debt
 - Delay-based busy-wait was removed; timer callback now drives click phases via queued tick events.
-- `autofire_delay` can still reach `0`; internal scheduling prevents unthrottled spin but UX guardrails are still missing.
-- No upper bound for delay.
+- Delay is now clamped to `5..1000 ms`; runaway/unbounded delay behavior is removed.
 - No persisted settings across app launches.
 - `tools.c` contains `strrev` that is currently unused.
 - UI communicates basics but lacks richer status and guardrails for extreme rates.
@@ -66,7 +65,7 @@ This file captures the key technical findings about this repository and the high
 
 ### P0 (Stability + Performance)
 1. [Done] Replace delay-based busy loop with timer-driven state machine.
-2. Clamp delay to safe range (for example `5..1000 ms`).
+2. [Done] Clamp delay to safe range (`5..1000 ms`).
 3. Ensure all exit/error paths restore USB config and release resources.
 4. Reduce unnecessary redraw frequency (update only on state change or low-rate refresh tick).
 5. Centralize cleanup in one path (`goto cleanup` pattern) to prevent leak/regression branches.
@@ -99,7 +98,7 @@ This file captures the key technical findings about this repository and the high
 - Manual smoke checklist:
   - App opens and renders status/version.
   - `OK` toggles active/inactive.
-  - `Left/Right` adjust delay and value is reflected on-screen.
+  - `Left/Right` adjust delay, value is reflected on-screen, and clamps at `5..1000 ms`.
   - While active, host receives repeated left clicks.
   - `Back` exits immediately and USB behavior returns to pre-app mode.
   - After exit, no stuck mouse button state on host.
@@ -116,12 +115,11 @@ This file captures the key technical findings about this repository and the high
 - Existing control contract (`OK`, `Left`, `Right`, `Back`) is preserved unless intentionally changed and documented.
 
 ## Suggested Implementation Order
-1. Clamp delay to bounded range and update UI text to reflect actual behavior.
-2. Centralize cleanup for all setup/exit/error paths.
-3. Reduce redraw frequency (state-change driven or low-rate refresh).
-4. Integrate richer status UI + CPS display.
-5. Add persistent settings.
-6. Refactor into modules and delete unused code.
+1. Centralize cleanup for all setup/exit/error paths.
+2. Reduce redraw frequency (state-change driven or low-rate refresh).
+3. Integrate richer status UI + CPS display.
+4. Add persistent settings.
+5. Refactor into modules and delete unused code.
 
 ## Notes for Future Agents
 - Prefer preserving current user-facing controls unless explicitly changing UX.
