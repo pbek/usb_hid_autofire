@@ -8,6 +8,7 @@ App(
     cdefines=["APP_USB_HID_AUTOFIRE"],
     requires=[
         "gui",
+        "storage",
     ],
     stack_size=1 * 1024,
     fap_icon="usb_hid_autofire.png",

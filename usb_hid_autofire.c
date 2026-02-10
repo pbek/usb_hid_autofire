@@ -1,9 +1,12 @@
 #include <stdio.h>
+#include <string.h>
 #include <furi.h>
 #include <furi_hal.h>
 #include <gui/gui.h>
 #include <input/input.h>
 #include <dialogs/dialogs.h>
+#include <storage/storage.h>
+#include <flipper_format/flipper_format.h>
 #include "version.h"
 
 #define TAG "usb_hid_autofire"
@@ -25,11 +28,16 @@
 #define HIGH_CPS_CONFIRM_THRESHOLD_X10 120U
 #define UI_REFRESH_PERIOD_MS 250U
 #define EVENT_DRAIN_MAX_COUNT 32U
+#define SETTINGS_SAVE_DEBOUNCE_MS 500U
+#define USB_HID_AUTOFIRE_SETTINGS_PATH APP_DATA_PATH(".settings")
+#define USB_HID_AUTOFIRE_SETTINGS_FILE_TYPE "USB HID Autofire Settings"
+#define USB_HID_AUTOFIRE_SETTINGS_VERSION 1U
 
 typedef enum {
     EventTypeInput,
     EventTypeTick,
     EventTypeUiRefresh,
+    EventTypeSettingsSave,
 } EventType;
 
 typedef enum {
@@ -52,6 +60,11 @@ typedef enum {
     AutofirePresetCount,
 } AutofirePreset;
 
+typedef enum {
+    AutofireStartupPolicyPausedOnLaunch,
+    AutofireStartupPolicyRestoreLastState,
+} AutofireStartupPolicy;
+
 typedef struct {
     union {
         InputEvent input;
@@ -66,11 +79,14 @@ typedef struct {
     DialogsApp* dialogs;
     FuriTimer* click_timer;
     FuriTimer* ui_refresh_timer;
+    FuriTimer* settings_save_timer;
     FuriHalUsbInterface* usb_mode_prev;
     bool active;
     bool mouse_pressed;
     bool ui_dirty;
+    bool settings_dirty;
     bool show_help;
+    bool last_active_state;
     uint32_t autofire_delay_ms;
     uint32_t realtime_cps_x10;
     uint32_t last_click_release_tick_ms;
@@ -84,6 +100,7 @@ typedef struct {
     bool back_long_handled;
     AutofireMode mode;
     AutofirePreset preset;
+    AutofireStartupPolicy startup_policy;
     ClickPhase click_phase;
 } UsbHidAutofireApp;
 
@@ -240,6 +257,18 @@ static AutofirePreset usb_hid_autofire_next_preset(AutofirePreset preset) {
     }
 }
 
+static bool usb_hid_autofire_mode_is_valid(uint32_t mode_value) {
+    return mode_value <= (uint32_t)AutofireModeKeyboardSpace;
+}
+
+static bool usb_hid_autofire_preset_is_valid(uint32_t preset_value) {
+    return preset_value < (uint32_t)AutofirePresetCount;
+}
+
+static bool usb_hid_autofire_startup_policy_is_valid(uint32_t startup_policy_value) {
+    return startup_policy_value <= (uint32_t)AutofireStartupPolicyRestoreLastState;
+}
+
 static void usb_hid_autofire_format_cps(char* out, size_t out_size, uint32_t cps_x10) {
     snprintf(out, out_size, "%lu.%lu", (unsigned long)(cps_x10 / 10U), (unsigned long)(cps_x10 % 10U));
 }
@@ -287,6 +316,119 @@ static uint32_t usb_hid_autofire_realtime_cps_x10(const UsbHidAutofireApp* app) 
     return (10000U + (effective_interval_ms / 2U)) / effective_interval_ms;
 }
 
+static void usb_hid_autofire_mark_settings_dirty(UsbHidAutofireApp* app) {
+    app->settings_dirty = true;
+    if(app->settings_save_timer) {
+        furi_timer_start(app->settings_save_timer, furi_ms_to_ticks(SETTINGS_SAVE_DEBOUNCE_MS));
+    }
+}
+
+static bool usb_hid_autofire_settings_save(const UsbHidAutofireApp* app) {
+    bool success = false;
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    FlipperFormat* settings_file = flipper_format_file_alloc(storage);
+    if(settings_file && flipper_format_file_open_always(settings_file, USB_HID_AUTOFIRE_SETTINGS_PATH)) {
+        do {
+            if(!flipper_format_write_header_cstr(
+                   settings_file,
+                   USB_HID_AUTOFIRE_SETTINGS_FILE_TYPE,
+                   USB_HID_AUTOFIRE_SETTINGS_VERSION)) {
+                break;
+            }
+
+            uint32_t delay_ms = usb_hid_autofire_delay_clamp(app->autofire_delay_ms);
+            uint32_t mode = app->mode;
+            uint32_t preset = app->preset;
+            uint32_t startup_policy = app->startup_policy;
+            bool last_active = app->last_active_state;
+
+            if(!flipper_format_write_uint32(settings_file, "delay_ms", &delay_ms, 1)) break;
+            if(!flipper_format_write_uint32(settings_file, "mode", &mode, 1)) break;
+            if(!flipper_format_write_uint32(settings_file, "preset", &preset, 1)) break;
+            if(!flipper_format_write_uint32(settings_file, "startup_policy", &startup_policy, 1)) break;
+            if(!flipper_format_write_bool(settings_file, "last_active", &last_active, 1)) break;
+
+            success = true;
+        } while(false);
+    }
+
+    if(settings_file) {
+        flipper_format_free(settings_file);
+    }
+    furi_record_close(RECORD_STORAGE);
+
+    if(!success) {
+        FURI_LOG_W(TAG, "Failed to save settings");
+    }
+
+    return success;
+}
+
+static bool usb_hid_autofire_settings_load(UsbHidAutofireApp* app) {
+    bool loaded = false;
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    FlipperFormat* settings_file = flipper_format_file_alloc(storage);
+    FuriString* file_type = furi_string_alloc();
+    uint32_t version = 0;
+    uint32_t delay_ms = AUTOFIRE_DELAY_DEFAULT_MS;
+    uint32_t mode = AutofireModeMouseLeftClick;
+    uint32_t preset = AutofirePresetCustom;
+    uint32_t startup_policy = AutofireStartupPolicyPausedOnLaunch;
+    bool last_active = false;
+
+    if(settings_file && flipper_format_file_open_existing(settings_file, USB_HID_AUTOFIRE_SETTINGS_PATH)) {
+        do {
+            if(!flipper_format_read_header(settings_file, file_type, &version)) break;
+            if((strcmp(furi_string_get_cstr(file_type), USB_HID_AUTOFIRE_SETTINGS_FILE_TYPE) != 0) ||
+               (version != USB_HID_AUTOFIRE_SETTINGS_VERSION))
+                break;
+            if(!flipper_format_read_uint32(settings_file, "delay_ms", &delay_ms, 1)) break;
+            if(!flipper_format_read_uint32(settings_file, "mode", &mode, 1)) break;
+            if(!flipper_format_read_uint32(settings_file, "preset", &preset, 1)) break;
+            if(!flipper_format_read_uint32(settings_file, "startup_policy", &startup_policy, 1)) break;
+            if(!flipper_format_read_bool(settings_file, "last_active", &last_active, 1)) break;
+            if(!usb_hid_autofire_mode_is_valid(mode)) break;
+            if(!usb_hid_autofire_preset_is_valid(preset)) break;
+            if(!usb_hid_autofire_startup_policy_is_valid(startup_policy)) break;
+
+            loaded = true;
+        } while(false);
+    }
+
+    furi_string_free(file_type);
+    if(settings_file) {
+        flipper_format_free(settings_file);
+    }
+    furi_record_close(RECORD_STORAGE);
+
+    if(!loaded) {
+        return false;
+    }
+
+    app->autofire_delay_ms = usb_hid_autofire_delay_clamp(delay_ms);
+    app->mode = (AutofireMode)mode;
+    app->preset = (AutofirePreset)preset;
+    app->startup_policy = AutofireStartupPolicyPausedOnLaunch;
+    app->last_active_state = last_active;
+
+    if((app->preset != AutofirePresetCustom) &&
+       (app->autofire_delay_ms != usb_hid_autofire_preset_delay_ms(app->preset))) {
+        app->preset = AutofirePresetCustom;
+    }
+
+    return true;
+}
+
+static void usb_hid_autofire_settings_flush_if_dirty(UsbHidAutofireApp* app) {
+    if(!app->settings_dirty) {
+        return;
+    }
+
+    if(usb_hid_autofire_settings_save(app)) {
+        app->settings_dirty = false;
+    }
+}
+
 static void usb_hid_autofire_render_callback(Canvas* canvas, void* ctx) {
     UsbHidAutofireApp* app = ctx;
     char status_str[24];
@@ -331,7 +473,7 @@ static void usb_hid_autofire_render_callback(Canvas* canvas, void* ctx) {
     canvas_draw_str(canvas, 0, 32, mode_str);
     canvas_draw_str(canvas, 0, 42, preset_str);
     canvas_draw_str(canvas, 0, 52, delay_rate_str);
-    canvas_draw_str(canvas, 0, 63, "U/D:mode L/R:delay");
+    canvas_draw_str(canvas, 0, 63, "B hold:help U/D:mode");
 }
 
 static void usb_hid_autofire_input_callback(InputEvent* input_event, void* ctx) {
@@ -352,6 +494,12 @@ static void usb_hid_autofire_timer_callback(void* ctx) {
 static void usb_hid_autofire_ui_timer_callback(void* ctx) {
     UsbHidAutofireApp* app = ctx;
     UsbMouseEvent event = {.type = EventTypeUiRefresh};
+    furi_message_queue_put(app->event_queue, &event, 0);
+}
+
+static void usb_hid_autofire_settings_save_timer_callback(void* ctx) {
+    UsbHidAutofireApp* app = ctx;
+    UsbMouseEvent event = {.type = EventTypeSettingsSave};
     furi_message_queue_put(app->event_queue, &event, 0);
 }
 
@@ -441,6 +589,7 @@ static bool usb_hid_autofire_set_mode(UsbHidAutofireApp* app, AutofireMode new_m
         furi_timer_stop(app->click_timer);
         usb_hid_autofire_schedule_next_tick(app);
     }
+    usb_hid_autofire_mark_settings_dirty(app);
     app->ui_dirty = true;
 
     return true;
@@ -462,6 +611,7 @@ static bool usb_hid_autofire_set_delay(
         furi_timer_stop(app->click_timer);
         usb_hid_autofire_schedule_next_tick(app);
     }
+    usb_hid_autofire_mark_settings_dirty(app);
     app->ui_dirty = true;
 
     return true;
@@ -680,11 +830,14 @@ int32_t usb_hid_autofire_app(void* p) {
         .dialogs = NULL,
         .click_timer = NULL,
         .ui_refresh_timer = NULL,
+        .settings_save_timer = NULL,
         .usb_mode_prev = NULL,
         .active = false,
         .mouse_pressed = false,
         .ui_dirty = true,
+        .settings_dirty = false,
         .show_help = false,
+        .last_active_state = false,
         .autofire_delay_ms = AUTOFIRE_DELAY_DEFAULT_MS,
         .realtime_cps_x10 = 0U,
         .last_click_release_tick_ms = 0U,
@@ -698,10 +851,12 @@ int32_t usb_hid_autofire_app(void* p) {
         .back_long_handled = false,
         .mode = AutofireModeMouseLeftClick,
         .preset = AutofirePresetCustom,
+        .startup_policy = AutofireStartupPolicyPausedOnLaunch,
         .click_phase = ClickPhasePress,
     };
 
     app.autofire_delay_ms = usb_hid_autofire_delay_clamp(app.autofire_delay_ms);
+    usb_hid_autofire_settings_load(&app);
     usb_hid_autofire_reset_cps_tracking(&app);
 
     app.event_queue = furi_message_queue_alloc(16, sizeof(UsbMouseEvent));
@@ -725,6 +880,13 @@ int32_t usb_hid_autofire_app(void* p) {
     app.ui_refresh_timer = furi_timer_alloc(usb_hid_autofire_ui_timer_callback, FuriTimerTypePeriodic, &app);
     if(!app.ui_refresh_timer) {
         FURI_LOG_E(TAG, "Failed to allocate UI refresh timer");
+        goto cleanup;
+    }
+
+    app.settings_save_timer =
+        furi_timer_alloc(usb_hid_autofire_settings_save_timer_callback, FuriTimerTypeOnce, &app);
+    if(!app.settings_save_timer) {
+        FURI_LOG_E(TAG, "Failed to allocate settings save timer");
         goto cleanup;
     }
 
@@ -753,6 +915,10 @@ int32_t usb_hid_autofire_app(void* p) {
 
     app.dialogs = furi_record_open(RECORD_DIALOGS);
 
+    if((app.startup_policy == AutofireStartupPolicyRestoreLastState) && app.last_active_state) {
+        usb_hid_autofire_start(&app);
+    }
+
     view_port_update(app.view_port);
     app.ui_dirty = false;
 
@@ -772,6 +938,8 @@ int32_t usb_hid_autofire_app(void* p) {
                 app.realtime_cps_x10 = new_cps_x10;
                 app.ui_dirty = true;
             }
+        } else if(event.type == EventTypeSettingsSave) {
+            usb_hid_autofire_settings_flush_if_dirty(&app);
         } else if(event.type == EventTypeInput) {
             if(event.input.key == InputKeyBack) {
                 if(event.input.type == InputTypeLong) {
@@ -816,8 +984,12 @@ int32_t usb_hid_autofire_app(void* p) {
                         app.ok_long_handled = false;
                     } else if(app.active) {
                         usb_hid_autofire_stop(&app);
+                        app.last_active_state = false;
+                        usb_hid_autofire_mark_settings_dirty(&app);
                     } else {
                         usb_hid_autofire_start(&app);
+                        app.last_active_state = true;
+                        usb_hid_autofire_mark_settings_dirty(&app);
                     }
                     app.ui_dirty = true;
                 }
@@ -833,6 +1005,7 @@ int32_t usb_hid_autofire_app(void* p) {
     ret = 0;
 
 cleanup:
+    usb_hid_autofire_settings_flush_if_dirty(&app);
     usb_hid_autofire_stop(&app);
 
 #ifndef USB_HID_AUTOFIRE_SCREENSHOT
@@ -854,6 +1027,11 @@ cleanup:
     if(app.ui_refresh_timer) {
         furi_timer_stop(app.ui_refresh_timer);
         furi_timer_free(app.ui_refresh_timer);
+    }
+
+    if(app.settings_save_timer) {
+        furi_timer_stop(app.settings_save_timer);
+        furi_timer_free(app.settings_save_timer);
     }
 
     if(app.view_port) {

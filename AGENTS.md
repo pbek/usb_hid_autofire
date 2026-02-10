@@ -18,15 +18,16 @@ This file captures the key technical findings about this repository and the high
 - Do not block UI/input handling long enough to make stop controls feel laggy.
 
 ## Current Runtime Flow
-1. App allocates message queue, viewport, one-shot click timer, and periodic UI refresh timer.
+1. App allocates message queue, viewport, one-shot click timer, periodic UI refresh timer, and one-shot settings-save debounce timer.
 2. App switches USB config to HID mouse mode (unless screenshot macro is enabled).
-3. Input callback pushes key events into queue.
-4. Timer callback pushes tick events into the same queue.
-5. Main loop:
+3. App loads persisted settings from `APP_DATA_PATH(".settings")` using Flipper Format (`delay`, `mode`, `preset`, `startup_policy`, `last_active`).
+4. Input callback pushes key events into queue.
+5. Timer callbacks push tick/refresh/settings-save events into the same queue.
+6. Main loop:
    - blocks on event queue (`FuriWaitForever`),
    - handles timer ticks by advancing click phase (`press`/`release`) and re-arming timer,
    - while active, handles periodic UI refresh ticks (`250 ms`) for real-time CPS display updates,
-   - toggles autofire on `OK` short release,
+   - toggles autofire on `OK` short release in main screen,
    - cycles presets on `OK` long press (slow/medium/fast),
    - opens built-in Flipper modal dialog for very high-CPS preset confirmation,
    - cycles fire mode on `Up/Down` short press and hold-repeat (`Up` backward, `Down` forward),
@@ -34,12 +35,13 @@ This file captures the key technical findings about this repository and the high
    - opens help screen on `Back` long press,
    - closes help screen on `Back` short release (without exiting),
    - exits on `Back` short release from main screen,
-   - redraws viewport only when UI-visible state changes.
-6. On toggle off / exit, app stops timers and releases any active fired control (mouse button or keyboard key) if needed.
-7. On exit it restores previous USB config and frees resources.
+   - redraws viewport only when UI-visible state changes,
+   - flushes dirty settings on debounced save events.
+7. On toggle off / exit, app stops timers and releases any active fired control (mouse button or keyboard key) if needed.
+8. On exit it flushes pending settings, restores previous USB config, and frees resources.
 
 ## Control Model
-- `OK` short: toggle active/inactive
+- `OK` short (main): toggle active/inactive
 - `OK` long: cycle presets (`Slow` -> `Medium` -> `Fast` -> ...)
 - `OK` confirm: apply pending high-CPS preset when confirmation prompt is shown
 - `Up`: cycle fired event mode backward (`Key Space` <- `Key Enter` <- `Mouse Right` <- `Mouse Left`)
@@ -61,6 +63,8 @@ This file captures the key technical findings about this repository and the high
   - `Slow`: `250 ms` (~4.0 CPS)
   - `Medium`: `120 ms` (~8.3 CPS)
   - `Fast`: `70 ms` (~14.3 CPS, requires confirmation)
+- Settings persistence uses debounced writes (`500 ms`) to reduce write frequency during hold-repeat changes.
+- Startup policy is currently fixed to `PausedOnLaunch` (no user-facing toggle), while startup-state handling logic remains in code.
 
 ## Failure Modes To Design For
 - USB HID config switch can fail; current code now routes setup failures through centralized cleanup.
@@ -76,12 +80,12 @@ This file captures the key technical findings about this repository and the high
 - Delay-based busy-wait was removed; timer callback now drives click phases via queued tick events.
 - Delay is now clamped to `5..10000 ms`; runaway/unbounded delay behavior is removed.
 - Unconditional per-loop redraw was removed; rendering is state-change driven.
-- No persisted settings across app launches.
 - `tools.c` contains `strrev` that is currently unused.
-- High-CPS preset confirmation uses built-in modal dialogs, but settings are still non-persistent.
+- High-CPS preset confirmation uses built-in modal dialogs.
 - Modal confirmation path now uses bounded input-queue draining to avoid long-press repeat deadlock before dialog show.
 - Main view is compact; help is now a dedicated screen opened by `Back` long press.
 - Fire engine now supports both mouse and keyboard events with release-on-stop safety.
+- Persisted settings currently include: delay, mode, preset, startup policy (internally fixed to paused), and last active state.
 
 ## Priority Improvements (Critical First)
 
@@ -96,7 +100,7 @@ This file captures the key technical findings about this repository and the high
 1. [Done] Show clearer status: `ACTIVE/PAUSED`, real-time CPS, delay, and selected mode.
 2. [Done] Support long-press acceleration for delay changes.
 3. [Done] Add presets (slow/medium/fast) and optional safety confirmation for very high CPS.
-4. Persist user settings (`delay`, mode, last active state policy).
+4. [Done] Persist user settings (`delay`, mode, last active state policy).
 
 ### P2 (Maintainability)
 1. Split monolithic file into modules:
@@ -127,6 +131,7 @@ This file captures the key technical findings about this repository and the high
   - While active, host receives repeated events for selected mode (`Mouse Left/Right`, `Enter`, `Space`).
   - `Back` short in main exits immediately and USB behavior returns to pre-app mode.
   - After exit, no stuck mouse button or keyboard key state on host.
+  - After restart, persisted settings are restored; app starts paused by policy.
 
 ## Compatibility Notes
 - Changelog records compatibility fix for Flipper firmware `0.74.2`.
@@ -140,8 +145,7 @@ This file captures the key technical findings about this repository and the high
 - Existing control contract (`OK`, `Left`, `Right`, `Back`) is preserved unless intentionally changed and documented.
 
 ## Suggested Implementation Order
-1. Add persistent settings.
-2. Refactor into modules and delete unused code.
+1. Refactor into modules and delete unused code.
 
 ## Notes for Future Agents
 - Prefer preserving current user-facing controls unless explicitly changing UX.
