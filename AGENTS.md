@@ -11,6 +11,14 @@ This file captures the key technical findings about this repository and the high
 - App manifest: `application.fam`
 - Current version: `0.6` (`version.h`)
 
+## Current Module Layout
+- `usb_hid_autofire.c`: app lifecycle/orchestration (resource allocation, event dispatch, centralized cleanup)
+- `usb_hid_autofire_i.h`: shared state struct, constants, enums, and module API contracts
+- `usb_hid_autofire_controller.c`: input/controller state transitions, delay/mode/preset logic, confirmation flow
+- `usb_hid_autofire_hid.c`: timer callbacks, HID press/release engine, click phase scheduler, CPS tracking
+- `usb_hid_autofire_ui.c`: canvas rendering for main/help screens
+- `usb_hid_autofire_settings.c`: persistence load/save/flush with debounced write scheduling
+
 ## Critical Invariants
 - Always restore the previous USB configuration before app exit.
 - Never leave any fired control pressed (mouse button or keyboard key) when exiting or on failure.
@@ -87,6 +95,7 @@ This file captures the key technical findings about this repository and the high
 - UI control hints now use rendered button glyph icons (Up/Down/Left/Right/OK/Back) from app-local icon assets for FAP-safe symbol resolution.
 - Fire engine now supports both mouse and keyboard events with release-on-stop safety.
 - Persisted settings currently include: delay, mode, preset, startup policy (internally fixed to paused), and last active state.
+- Monolithic implementation has been split into focused modules with a shared internal header contract.
 
 ## Priority Improvements (Critical First)
 
@@ -104,7 +113,7 @@ This file captures the key technical findings about this repository and the high
 4. [Done] Persist user settings (`delay`, mode, last active state policy).
 
 ### P2 (Maintainability)
-1. Split monolithic file into modules:
+1. [Done] Split monolithic file into modules:
    - input/controller state
    - HID sender/timer
    - UI rendering
@@ -146,7 +155,8 @@ This file captures the key technical findings about this repository and the high
 - Existing control contract (`OK`, `Left`, `Right`, `Back`) is preserved unless intentionally changed and documented.
 
 ## Suggested Implementation Order
-1. Refactor into modules and delete unused code.
+1. Remove dead code (`tools.c/.h`) unless reused.
+2. Add internal comments only for non-obvious timing/state logic.
 
 ## Notes for Future Agents
 - Prefer preserving current user-facing controls unless explicitly changing UX.
