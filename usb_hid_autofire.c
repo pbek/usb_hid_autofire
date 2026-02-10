@@ -13,6 +13,10 @@
 #define AUTOFIRE_DELAY_MIN_MS 5U
 #define AUTOFIRE_DELAY_MAX_MS 1000U
 #define AUTOFIRE_DELAY_STEP_MS 10U
+#define AUTOFIRE_DELAY_ACCEL_MEDIUM_MS 50U
+#define AUTOFIRE_DELAY_ACCEL_FAST_MS 100U
+#define AUTOFIRE_REPEAT_MEDIUM_THRESHOLD 3U
+#define AUTOFIRE_REPEAT_FAST_THRESHOLD 8U
 #define AUTOFIRE_DELAY_DEFAULT_MS 10U
 #define UI_REFRESH_PERIOD_MS 250U
 
@@ -52,6 +56,9 @@ typedef struct {
     uint32_t realtime_cps_x10;
     uint32_t last_click_release_tick_ms;
     uint32_t last_click_interval_ms;
+    bool adjust_hold_active;
+    InputKey adjust_hold_key;
+    uint16_t adjust_repeat_count;
     AutofireMode mode;
     ClickPhase click_phase;
 } UsbHidAutofireApp;
@@ -68,30 +75,48 @@ static uint32_t usb_hid_autofire_delay_clamp(uint32_t delay_ms) {
     return delay_ms;
 }
 
-static uint32_t usb_hid_autofire_delay_decrease(uint32_t delay_ms) {
+static uint32_t usb_hid_autofire_delay_decrease(uint32_t delay_ms, uint32_t step_ms) {
+    if(step_ms == 0U) {
+        return usb_hid_autofire_delay_clamp(delay_ms);
+    }
+
     delay_ms = usb_hid_autofire_delay_clamp(delay_ms);
     if(delay_ms <= AUTOFIRE_DELAY_MIN_MS) {
         return AUTOFIRE_DELAY_MIN_MS;
     }
 
-    if((delay_ms - AUTOFIRE_DELAY_MIN_MS) < AUTOFIRE_DELAY_STEP_MS) {
+    if((delay_ms - AUTOFIRE_DELAY_MIN_MS) < step_ms) {
         return AUTOFIRE_DELAY_MIN_MS;
     }
 
-    return delay_ms - AUTOFIRE_DELAY_STEP_MS;
+    return delay_ms - step_ms;
 }
 
-static uint32_t usb_hid_autofire_delay_increase(uint32_t delay_ms) {
+static uint32_t usb_hid_autofire_delay_increase(uint32_t delay_ms, uint32_t step_ms) {
+    if(step_ms == 0U) {
+        return usb_hid_autofire_delay_clamp(delay_ms);
+    }
+
     delay_ms = usb_hid_autofire_delay_clamp(delay_ms);
     if(delay_ms >= AUTOFIRE_DELAY_MAX_MS) {
         return AUTOFIRE_DELAY_MAX_MS;
     }
 
-    if((AUTOFIRE_DELAY_MAX_MS - delay_ms) < AUTOFIRE_DELAY_STEP_MS) {
+    if((AUTOFIRE_DELAY_MAX_MS - delay_ms) < step_ms) {
         return AUTOFIRE_DELAY_MAX_MS;
     }
 
-    return delay_ms + AUTOFIRE_DELAY_STEP_MS;
+    return delay_ms + step_ms;
+}
+
+static uint32_t usb_hid_autofire_accel_step_ms(uint16_t repeat_count) {
+    if(repeat_count >= AUTOFIRE_REPEAT_FAST_THRESHOLD) {
+        return AUTOFIRE_DELAY_ACCEL_FAST_MS;
+    }
+    if(repeat_count >= AUTOFIRE_REPEAT_MEDIUM_THRESHOLD) {
+        return AUTOFIRE_DELAY_ACCEL_MEDIUM_MS;
+    }
+    return AUTOFIRE_DELAY_STEP_MS;
 }
 
 static const char* usb_hid_autofire_mode_label(AutofireMode mode) {
@@ -209,6 +234,75 @@ static void usb_hid_autofire_schedule_next_tick(UsbHidAutofireApp* app) {
     furi_timer_start(app->click_timer, usb_hid_autofire_half_delay_ticks(app));
 }
 
+static bool usb_hid_autofire_set_delay(UsbHidAutofireApp* app, uint32_t new_delay_ms) {
+    new_delay_ms = usb_hid_autofire_delay_clamp(new_delay_ms);
+    if(new_delay_ms == app->autofire_delay_ms) {
+        return false;
+    }
+
+    app->autofire_delay_ms = new_delay_ms;
+    if(app->active) {
+        furi_timer_stop(app->click_timer);
+        usb_hid_autofire_schedule_next_tick(app);
+    }
+    app->ui_dirty = true;
+
+    return true;
+}
+
+static void usb_hid_autofire_adjust_delay(UsbHidAutofireApp* app, InputKey key, uint32_t step_ms) {
+    if(key == InputKeyLeft) {
+        usb_hid_autofire_set_delay(
+            app, usb_hid_autofire_delay_decrease(app->autofire_delay_ms, step_ms));
+    } else if(key == InputKeyRight) {
+        usb_hid_autofire_set_delay(
+            app, usb_hid_autofire_delay_increase(app->autofire_delay_ms, step_ms));
+    }
+}
+
+static void usb_hid_autofire_handle_delay_input(UsbHidAutofireApp* app, const InputEvent* input) {
+    if((input->key != InputKeyLeft) && (input->key != InputKeyRight)) {
+        return;
+    }
+
+    switch(input->type) {
+        case InputTypeShort:
+            usb_hid_autofire_adjust_delay(app, input->key, AUTOFIRE_DELAY_STEP_MS);
+            break;
+
+        case InputTypeLong:
+            app->adjust_hold_active = true;
+            app->adjust_hold_key = input->key;
+            app->adjust_repeat_count = 0U;
+            usb_hid_autofire_adjust_delay(app, input->key, AUTOFIRE_DELAY_ACCEL_MEDIUM_MS);
+            break;
+
+        case InputTypeRepeat:
+            if((!app->adjust_hold_active) || (app->adjust_hold_key != input->key)) {
+                app->adjust_hold_active = true;
+                app->adjust_hold_key = input->key;
+                app->adjust_repeat_count = 0U;
+            }
+            if(app->adjust_repeat_count < 0xFFFFU) {
+                app->adjust_repeat_count++;
+            }
+            usb_hid_autofire_adjust_delay(
+                app, input->key, usb_hid_autofire_accel_step_ms(app->adjust_repeat_count));
+            break;
+
+        case InputTypeRelease:
+            if(app->adjust_hold_active && (app->adjust_hold_key == input->key)) {
+                app->adjust_hold_active = false;
+                app->adjust_hold_key = InputKeyMAX;
+                app->adjust_repeat_count = 0U;
+            }
+            break;
+
+        default:
+            break;
+    }
+}
+
 static void usb_hid_autofire_stop(UsbHidAutofireApp* app) {
     app->active = false;
     app->click_phase = ClickPhasePress;
@@ -225,6 +319,9 @@ static void usb_hid_autofire_stop(UsbHidAutofireApp* app) {
     }
 
     usb_hid_autofire_reset_cps_tracking(app);
+    app->adjust_hold_active = false;
+    app->adjust_hold_key = InputKeyMAX;
+    app->adjust_repeat_count = 0U;
 }
 
 static void usb_hid_autofire_tick(UsbHidAutofireApp* app) {
@@ -267,6 +364,9 @@ int32_t usb_hid_autofire_app(void* p) {
         .realtime_cps_x10 = 0U,
         .last_click_release_tick_ms = 0U,
         .last_click_interval_ms = 0U,
+        .adjust_hold_active = false,
+        .adjust_hold_key = InputKeyMAX,
+        .adjust_repeat_count = 0U,
         .mode = AutofireModeLeftClick,
         .click_phase = ClickPhasePress,
     };
@@ -344,52 +444,19 @@ int32_t usb_hid_autofire_app(void* p) {
                 break;
             }
 
-            if(event.input.type == InputTypeRelease) {
-                switch(event.input.key) {
-                    case InputKeyOk:
-                        if(app.active) {
-                            usb_hid_autofire_stop(&app);
-                        } else {
-                            app.active = true;
-                            app.click_phase = ClickPhasePress;
-                            usb_hid_autofire_reset_cps_tracking(&app);
-                            furi_timer_start(
-                                app.ui_refresh_timer, furi_ms_to_ticks(UI_REFRESH_PERIOD_MS));
-                            usb_hid_autofire_tick(&app);
-                        }
-                        app.ui_dirty = true;
-                        break;
-                    case InputKeyLeft:
-                        {
-                            uint32_t new_delay_ms =
-                                usb_hid_autofire_delay_decrease(app.autofire_delay_ms);
-                            if(new_delay_ms != app.autofire_delay_ms) {
-                                app.autofire_delay_ms = new_delay_ms;
-                                if(app.active) {
-                                    furi_timer_stop(app.click_timer);
-                                    usb_hid_autofire_schedule_next_tick(&app);
-                                }
-                                app.ui_dirty = true;
-                            }
-                        }
-                        break;
-                    case InputKeyRight:
-                        {
-                            uint32_t new_delay_ms =
-                                usb_hid_autofire_delay_increase(app.autofire_delay_ms);
-                            if(new_delay_ms != app.autofire_delay_ms) {
-                                app.autofire_delay_ms = new_delay_ms;
-                                if(app.active) {
-                                    furi_timer_stop(app.click_timer);
-                                    usb_hid_autofire_schedule_next_tick(&app);
-                                }
-                                app.ui_dirty = true;
-                            }
-                        }
-                        break;
-                    default:
-                        break;
+            if((event.input.key == InputKeyLeft) || (event.input.key == InputKeyRight)) {
+                usb_hid_autofire_handle_delay_input(&app, &event.input);
+            } else if((event.input.key == InputKeyOk) && (event.input.type == InputTypeRelease)) {
+                if(app.active) {
+                    usb_hid_autofire_stop(&app);
+                } else {
+                    app.active = true;
+                    app.click_phase = ClickPhasePress;
+                    usb_hid_autofire_reset_cps_tracking(&app);
+                    furi_timer_start(app.ui_refresh_timer, furi_ms_to_ticks(UI_REFRESH_PERIOD_MS));
+                    usb_hid_autofire_tick(&app);
                 }
+                app.ui_dirty = true;
             }
         }
 

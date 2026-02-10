@@ -27,7 +27,7 @@ This file captures the key technical findings about this repository and the high
    - handles timer ticks by advancing click phase (`press`/`release`) and re-arming timer,
    - while active, handles periodic UI refresh ticks (`250 ms`) for real-time CPS display updates,
    - toggles autofire on `OK` release,
-   - adjusts delay with `Left/Right` release,
+   - adjusts delay with `Left/Right` short press and long-press acceleration (`Long`/`Repeat`),
    - exits on `Back`,
    - redraws viewport only when UI-visible state changes.
 6. On toggle off / exit, app stops timers and releases left mouse button if needed.
@@ -35,8 +35,8 @@ This file captures the key technical findings about this repository and the high
 
 ## Control Model
 - `OK`: toggle active/inactive
-- `Left`: decrease delay by 10 ms (clamped at 5 ms)
-- `Right`: increase delay by 10 ms (clamped at 1000 ms)
+- `Left`: decrease delay with acceleration while held (clamped at 5 ms)
+- `Right`: increase delay with acceleration while held (clamped at 1000 ms)
 - `Back`: exit app
 
 ## Timing Model (Current)
@@ -76,7 +76,7 @@ This file captures the key technical findings about this repository and the high
 
 ### P1 (User Experience)
 1. [Done] Show clearer status: `ACTIVE/PAUSED`, real-time CPS, delay, and selected mode.
-2. Support long-press acceleration for delay changes.
+2. [Done] Support long-press acceleration for delay changes.
 3. Add presets (for example slow/medium/fast) and optional safety confirmation for very high CPS.
 4. Persist user settings (`delay`, mode, last active state policy).
 
@@ -102,7 +102,7 @@ This file captures the key technical findings about this repository and the high
 - Manual smoke checklist:
   - App opens and renders status/version.
   - `OK` toggles active/inactive.
-  - `Left/Right` adjust delay, value is reflected on-screen, and clamps at `5..1000 ms`.
+  - `Left/Right` short press adjusts delay by one step, hold accelerates, and values clamp at `5..1000 ms`.
   - While active, host receives repeated left clicks.
   - `Back` exits immediately and USB behavior returns to pre-app mode.
   - After exit, no stuck mouse button state on host.
@@ -119,8 +119,9 @@ This file captures the key technical findings about this repository and the high
 - Existing control contract (`OK`, `Left`, `Right`, `Back`) is preserved unless intentionally changed and documented.
 
 ## Suggested Implementation Order
-1. Add persistent settings.
-2. Refactor into modules and delete unused code.
+1. Add presets and optional high-CPS safety confirmation.
+2. Add persistent settings.
+3. Refactor into modules and delete unused code.
 
 ## Notes for Future Agents
 - Prefer preserving current user-facing controls unless explicitly changing UX.
