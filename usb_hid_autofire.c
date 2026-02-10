@@ -14,16 +14,22 @@
 #define AUTOFIRE_DELAY_MAX_MS 1000U
 #define AUTOFIRE_DELAY_STEP_MS 10U
 #define AUTOFIRE_DELAY_DEFAULT_MS 10U
+#define UI_REFRESH_PERIOD_MS 250U
 
 typedef enum {
     EventTypeInput,
     EventTypeTick,
+    EventTypeUiRefresh,
 } EventType;
 
 typedef enum {
     ClickPhasePress,
     ClickPhaseRelease,
 } ClickPhase;
+
+typedef enum {
+    AutofireModeLeftClick,
+} AutofireMode;
 
 typedef struct {
     union {
@@ -37,11 +43,16 @@ typedef struct {
     ViewPort* view_port;
     Gui* gui;
     FuriTimer* click_timer;
+    FuriTimer* ui_refresh_timer;
     FuriHalUsbInterface* usb_mode_prev;
     bool active;
     bool mouse_pressed;
     bool ui_dirty;
     uint32_t autofire_delay_ms;
+    uint32_t realtime_cps_x10;
+    uint32_t last_click_release_tick_ms;
+    uint32_t last_click_interval_ms;
+    AutofireMode mode;
     ClickPhase click_phase;
 } UsbHidAutofireApp;
 
@@ -83,24 +94,86 @@ static uint32_t usb_hid_autofire_delay_increase(uint32_t delay_ms) {
     return delay_ms + AUTOFIRE_DELAY_STEP_MS;
 }
 
+static const char* usb_hid_autofire_mode_label(AutofireMode mode) {
+    switch(mode) {
+        case AutofireModeLeftClick:
+            return "Left Click";
+        default:
+            return "Unknown";
+    }
+}
+
+static void usb_hid_autofire_format_cps(char* out, size_t out_size, uint32_t cps_x10) {
+    snprintf(out, out_size, "%lu.%lu", (unsigned long)(cps_x10 / 10U), (unsigned long)(cps_x10 % 10U));
+}
+
+static uint32_t usb_hid_autofire_effective_cycle_ms(const UsbHidAutofireApp* app) {
+    uint32_t half_delay_ms = app->autofire_delay_ms / 2U;
+    if(half_delay_ms == 0U) {
+        half_delay_ms = 1U;
+    }
+    return half_delay_ms * 2U;
+}
+
+static void usb_hid_autofire_reset_cps_tracking(UsbHidAutofireApp* app) {
+    app->realtime_cps_x10 = 0U;
+    app->last_click_release_tick_ms = 0U;
+    app->last_click_interval_ms = usb_hid_autofire_effective_cycle_ms(app);
+}
+
+static void usb_hid_autofire_record_click_release(UsbHidAutofireApp* app) {
+    uint32_t now_ms = furi_get_tick();
+    if(app->last_click_release_tick_ms != 0U) {
+        uint32_t interval_ms = now_ms - app->last_click_release_tick_ms;
+        if(interval_ms == 0U) {
+            interval_ms = 1U;
+        }
+        app->last_click_interval_ms = interval_ms;
+    }
+    app->last_click_release_tick_ms = now_ms;
+}
+
+static uint32_t usb_hid_autofire_realtime_cps_x10(const UsbHidAutofireApp* app) {
+    if(!app->active || (app->last_click_release_tick_ms == 0U) || (app->last_click_interval_ms == 0U)) {
+        return 0U;
+    }
+
+    uint32_t elapsed_ms = furi_get_tick() - app->last_click_release_tick_ms;
+    uint32_t effective_interval_ms = app->last_click_interval_ms;
+    if(elapsed_ms > effective_interval_ms) {
+        effective_interval_ms = elapsed_ms;
+    }
+    if(effective_interval_ms == 0U) {
+        effective_interval_ms = 1U;
+    }
+
+    return (10000U + (effective_interval_ms / 2U)) / effective_interval_ms;
+}
+
 static void usb_hid_autofire_render_callback(Canvas* canvas, void* ctx) {
     UsbHidAutofireApp* app = ctx;
-    char autofire_delay_str[12];
-    snprintf(autofire_delay_str, sizeof(autofire_delay_str), "%lu", (unsigned long)app->autofire_delay_ms);
+    char mode_str[24];
+    char delay_str[24];
+    char cps_str[24];
+    snprintf(mode_str, sizeof(mode_str), "Mode: %s", usb_hid_autofire_mode_label(app->mode));
+    snprintf(delay_str, sizeof(delay_str), "Delay: %lu ms", (unsigned long)app->autofire_delay_ms);
+    usb_hid_autofire_format_cps(cps_str, sizeof(cps_str), app->realtime_cps_x10);
 
     canvas_clear(canvas);
 
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 0, 10, "USB HID Autofire");
-    canvas_draw_str(canvas, 0, 34, app->active ? "<active>" : "<inactive>");
-
-    canvas_set_font(canvas, FontSecondary);
     canvas_draw_str(canvas, 90, 10, "v");
     canvas_draw_str(canvas, 96, 10, VERSION);
-    canvas_draw_str(canvas, 0, 22, "Press [ok] for auto left clicking");
-    canvas_draw_str(canvas, 0, 46, "delay [ms]:");
-    canvas_draw_str(canvas, 50, 46, autofire_delay_str);
-    canvas_draw_str(canvas, 0, 63, "Press [back] to exit");
+
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 0, 22, app->active ? "Status: ACTIVE" : "Status: PAUSED");
+    canvas_draw_str(canvas, 0, 32, mode_str);
+    canvas_draw_str(canvas, 0, 42, delay_str);
+    canvas_draw_str(canvas, 0, 52, "Rate:");
+    canvas_draw_str(canvas, 32, 52, cps_str);
+    canvas_draw_str(canvas, 62, 52, "CPS");
+    canvas_draw_str(canvas, 0, 63, "OK toggle  Back exit");
 }
 
 static void usb_hid_autofire_input_callback(InputEvent* input_event, void* ctx) {
@@ -115,6 +188,12 @@ static void usb_hid_autofire_input_callback(InputEvent* input_event, void* ctx) 
 static void usb_hid_autofire_timer_callback(void* ctx) {
     UsbHidAutofireApp* app = ctx;
     UsbMouseEvent event = {.type = EventTypeTick};
+    furi_message_queue_put(app->event_queue, &event, 0);
+}
+
+static void usb_hid_autofire_ui_timer_callback(void* ctx) {
+    UsbHidAutofireApp* app = ctx;
+    UsbMouseEvent event = {.type = EventTypeUiRefresh};
     furi_message_queue_put(app->event_queue, &event, 0);
 }
 
@@ -136,11 +215,16 @@ static void usb_hid_autofire_stop(UsbHidAutofireApp* app) {
     if(app->click_timer) {
         furi_timer_stop(app->click_timer);
     }
+    if(app->ui_refresh_timer) {
+        furi_timer_stop(app->ui_refresh_timer);
+    }
 
     if(app->mouse_pressed) {
         furi_hal_hid_mouse_release(HID_MOUSE_BTN_LEFT);
         app->mouse_pressed = false;
     }
+
+    usb_hid_autofire_reset_cps_tracking(app);
 }
 
 static void usb_hid_autofire_tick(UsbHidAutofireApp* app) {
@@ -155,6 +239,7 @@ static void usb_hid_autofire_tick(UsbHidAutofireApp* app) {
     } else {
         furi_hal_hid_mouse_release(HID_MOUSE_BTN_LEFT);
         app->mouse_pressed = false;
+        usb_hid_autofire_record_click_release(app);
         app->click_phase = ClickPhasePress;
     }
 
@@ -173,15 +258,21 @@ int32_t usb_hid_autofire_app(void* p) {
         .view_port = NULL,
         .gui = NULL,
         .click_timer = NULL,
+        .ui_refresh_timer = NULL,
         .usb_mode_prev = NULL,
         .active = false,
         .mouse_pressed = false,
         .ui_dirty = true,
         .autofire_delay_ms = AUTOFIRE_DELAY_DEFAULT_MS,
+        .realtime_cps_x10 = 0U,
+        .last_click_release_tick_ms = 0U,
+        .last_click_interval_ms = 0U,
+        .mode = AutofireModeLeftClick,
         .click_phase = ClickPhasePress,
     };
 
     app.autofire_delay_ms = usb_hid_autofire_delay_clamp(app.autofire_delay_ms);
+    usb_hid_autofire_reset_cps_tracking(&app);
 
     app.event_queue = furi_message_queue_alloc(16, sizeof(UsbMouseEvent));
     if(!app.event_queue) {
@@ -198,6 +289,12 @@ int32_t usb_hid_autofire_app(void* p) {
     app.click_timer = furi_timer_alloc(usb_hid_autofire_timer_callback, FuriTimerTypeOnce, &app);
     if(!app.click_timer) {
         FURI_LOG_E(TAG, "Failed to allocate timer");
+        goto cleanup;
+    }
+
+    app.ui_refresh_timer = furi_timer_alloc(usb_hid_autofire_ui_timer_callback, FuriTimerTypePeriodic, &app);
+    if(!app.ui_refresh_timer) {
+        FURI_LOG_E(TAG, "Failed to allocate UI refresh timer");
         goto cleanup;
     }
 
@@ -236,6 +333,12 @@ int32_t usb_hid_autofire_app(void* p) {
 
         if(event.type == EventTypeTick) {
             usb_hid_autofire_tick(&app);
+        } else if(event.type == EventTypeUiRefresh) {
+            uint32_t new_cps_x10 = usb_hid_autofire_realtime_cps_x10(&app);
+            if(new_cps_x10 != app.realtime_cps_x10) {
+                app.realtime_cps_x10 = new_cps_x10;
+                app.ui_dirty = true;
+            }
         } else if(event.type == EventTypeInput) {
             if(event.input.key == InputKeyBack) {
                 break;
@@ -249,6 +352,9 @@ int32_t usb_hid_autofire_app(void* p) {
                         } else {
                             app.active = true;
                             app.click_phase = ClickPhasePress;
+                            usb_hid_autofire_reset_cps_tracking(&app);
+                            furi_timer_start(
+                                app.ui_refresh_timer, furi_ms_to_ticks(UI_REFRESH_PERIOD_MS));
                             usb_hid_autofire_tick(&app);
                         }
                         app.ui_dirty = true;
@@ -310,7 +416,13 @@ cleanup:
     }
 
     if(app.click_timer) {
+        furi_timer_stop(app.click_timer);
         furi_timer_free(app.click_timer);
+    }
+
+    if(app.ui_refresh_timer) {
+        furi_timer_stop(app.ui_refresh_timer);
+        furi_timer_free(app.ui_refresh_timer);
     }
 
     if(app.view_port) {

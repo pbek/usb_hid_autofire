@@ -18,18 +18,19 @@ This file captures the key technical findings about this repository and the high
 - Do not block UI/input handling long enough to make stop controls feel laggy.
 
 ## Current Runtime Flow
-1. App allocates message queue, viewport, and one-shot click timer.
+1. App allocates message queue, viewport, one-shot click timer, and periodic UI refresh timer.
 2. App switches USB config to HID mouse mode (unless screenshot macro is enabled).
 3. Input callback pushes key events into queue.
 4. Timer callback pushes tick events into the same queue.
 5. Main loop:
    - blocks on event queue (`FuriWaitForever`),
    - handles timer ticks by advancing click phase (`press`/`release`) and re-arming timer,
+   - while active, handles periodic UI refresh ticks (`250 ms`) for real-time CPS display updates,
    - toggles autofire on `OK` release,
    - adjusts delay with `Left/Right` release,
    - exits on `Back`,
    - redraws viewport only when UI-visible state changes.
-6. On toggle off / exit, app stops timer and releases left mouse button if needed.
+6. On toggle off / exit, app stops timers and releases left mouse button if needed.
 7. On exit it restores previous USB config and frees resources.
 
 ## Control Model
@@ -44,6 +45,7 @@ This file captures the key technical findings about this repository and the high
   - `half_delay_ms = autofire_delay / 2`
   - fallback clamp to at least `1 ms` tick remains as a defensive guard
 - Total cycle is approximately `autofire_delay` ms (integer rounding by half-split applies).
+- UI shows real-time CPS derived from observed click-release timing, so runtime lag is reflected in displayed rate.
 
 ## Failure Modes To Design For
 - USB HID config switch can fail; current code now routes setup failures through centralized cleanup.
@@ -73,7 +75,7 @@ This file captures the key technical findings about this repository and the high
 5. [Done] Centralize cleanup in one path (`goto cleanup` pattern) to prevent leak/regression branches.
 
 ### P1 (User Experience)
-1. Show clearer status: `ACTIVE/PAUSED`, effective CPS, delay, and selected mode.
+1. [Done] Show clearer status: `ACTIVE/PAUSED`, real-time CPS, delay, and selected mode.
 2. Support long-press acceleration for delay changes.
 3. Add presets (for example slow/medium/fast) and optional safety confirmation for very high CPS.
 4. Persist user settings (`delay`, mode, last active state policy).
@@ -117,9 +119,8 @@ This file captures the key technical findings about this repository and the high
 - Existing control contract (`OK`, `Left`, `Right`, `Back`) is preserved unless intentionally changed and documented.
 
 ## Suggested Implementation Order
-1. Integrate richer status UI + CPS display.
-2. Add persistent settings.
-3. Refactor into modules and delete unused code.
+1. Add persistent settings.
+2. Refactor into modules and delete unused code.
 
 ## Notes for Future Agents
 - Prefer preserving current user-facing controls unless explicitly changing UX.
