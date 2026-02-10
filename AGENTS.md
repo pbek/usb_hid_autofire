@@ -18,17 +18,18 @@ This file captures the key technical findings about this repository and the high
 - Do not block UI/input handling long enough to make stop controls feel laggy.
 
 ## Current Runtime Flow
-1. App allocates message queue and viewport.
+1. App allocates message queue, viewport, and one-shot click timer.
 2. App switches USB config to HID mouse mode (unless screenshot macro is enabled).
 3. Input callback pushes key events into queue.
-4. Main loop:
-   - polls input queue (`50 ms` timeout),
+4. Timer callback pushes tick events into the same queue.
+5. Main loop:
+   - polls event queue (`50 ms` timeout),
+   - handles timer ticks by advancing click phase (`press`/`release`) and re-arming timer,
    - toggles autofire on `OK` release,
    - adjusts delay with `Left/Right` release,
    - exits on `Back`.
-5. If active, it sends:
-   - `mouse_press(left)` -> wait -> `mouse_release(left)` -> wait.
-6. On exit it restores previous USB config and frees resources.
+6. On toggle off / exit, app stops timer and releases left mouse button if needed.
+7. On exit it restores previous USB config and frees resources.
 
 ## Control Model
 - `OK`: toggle active/inactive
@@ -37,11 +38,11 @@ This file captures the key technical findings about this repository and the high
 - `Back`: exit app
 
 ## Timing Model (Current)
-- Delay variable shown as milliseconds, but implemented as:
-  - `wait_us = autofire_delay * 500` before release
-  - `wait_us = autofire_delay * 500` after release
-- Total cycle is approximately `autofire_delay` milliseconds.
-- Approximate clicks/sec is `1000 / autofire_delay` (except edge case `delay=0`).
+- Delay variable is shown as milliseconds and applied as two timer halves:
+  - `half_delay_ms = autofire_delay / 2`
+  - each half is clamped to at least `1 ms` tick
+- Total cycle is approximately `2 * max(1, autofire_delay / 2)` ms.
+- `delay=0` no longer creates an effectively unthrottled busy loop; max practical rate is now bounded by timer tick granularity.
 
 ## Failure Modes To Design For
 - USB HID config switch can fail; current code uses `furi_check(...)` and abort-like behavior.
@@ -50,12 +51,12 @@ This file captures the key technical findings about this repository and the high
 
 ## Numeric Safety Notes
 - `autofire_delay` is `uint32_t` and currently increases without an upper bound.
-- Timing multiply (`autofire_delay * 500`) can overflow at high values.
+- Direct microsecond multiply overflow risk was removed with timer-based scheduling.
 - Future changes should define and enforce explicit bounds, then perform checked/saturated math.
 
 ## Findings: Risks / Technical Debt
-- Busy-wait style click loop (`furi_delay_us`) blocks cooperatively and can cause jitter.
-- `autofire_delay` can reach `0`, enabling an effectively unthrottled loop.
+- Delay-based busy-wait was removed; timer callback now drives click phases via queued tick events.
+- `autofire_delay` can still reach `0`; internal scheduling prevents unthrottled spin but UX guardrails are still missing.
 - No upper bound for delay.
 - No persisted settings across app launches.
 - `tools.c` contains `strrev` that is currently unused.
@@ -64,7 +65,7 @@ This file captures the key technical findings about this repository and the high
 ## Priority Improvements (Critical First)
 
 ### P0 (Stability + Performance)
-1. Replace delay-based busy loop with timer-driven state machine.
+1. [Done] Replace delay-based busy loop with timer-driven state machine.
 2. Clamp delay to safe range (for example `5..1000 ms`).
 3. Ensure all exit/error paths restore USB config and release resources.
 4. Reduce unnecessary redraw frequency (update only on state change or low-rate refresh tick).
@@ -115,11 +116,12 @@ This file captures the key technical findings about this repository and the high
 - Existing control contract (`OK`, `Left`, `Right`, `Back`) is preserved unless intentionally changed and documented.
 
 ## Suggested Implementation Order
-1. Introduce bounded config + central state struct.
-2. Implement timer-based click engine.
-3. Integrate UI status improvements + CPS display.
-4. Add persistent settings.
-5. Refactor into modules and delete unused code.
+1. Clamp delay to bounded range and update UI text to reflect actual behavior.
+2. Centralize cleanup for all setup/exit/error paths.
+3. Reduce redraw frequency (state-change driven or low-rate refresh).
+4. Integrate richer status UI + CPS display.
+5. Add persistent settings.
+6. Refactor into modules and delete unused code.
 
 ## Notes for Future Agents
 - Prefer preserving current user-facing controls unless explicitly changing UX.
