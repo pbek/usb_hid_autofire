@@ -84,6 +84,7 @@ This file captures the key technical findings about this repository and the high
 - High-CPS preset confirmation uses built-in modal dialogs.
 - Modal confirmation path now uses bounded input-queue draining to avoid long-press repeat deadlock before dialog show.
 - Main view is compact; help is now a dedicated screen opened by `Back` long press.
+- UI control hints now use rendered button glyph icons (Up/Down/Left/Right/OK/Back) from app-local icon assets for FAP-safe symbol resolution.
 - Fire engine now supports both mouse and keyboard events with release-on-stop safety.
 - Persisted settings currently include: delay, mode, preset, startup policy (internally fixed to paused), and last active state.
 

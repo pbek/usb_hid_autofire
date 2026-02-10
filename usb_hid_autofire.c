@@ -7,6 +7,7 @@
 #include <dialogs/dialogs.h>
 #include <storage/storage.h>
 #include <flipper_format/flipper_format.h>
+#include <usb_hid_autofire_icons.h>
 #include "version.h"
 
 #define TAG "usb_hid_autofire"
@@ -444,11 +445,22 @@ static void usb_hid_autofire_render_callback(Canvas* canvas, void* ctx) {
         canvas_draw_str(canvas, 0, 10, "Autofire Help");
 
         canvas_set_font(canvas, FontSecondary);
-        canvas_draw_str(canvas, 0, 22, "OK short: start/pause");
-        canvas_draw_str(canvas, 0, 32, "OK long: cycle preset");
-        canvas_draw_str(canvas, 0, 42, "U/D short+hold: mode");
-        canvas_draw_str(canvas, 0, 52, "L/R short+hold: delay");
-        canvas_draw_str(canvas, 0, 63, "Back short: close");
+        canvas_draw_icon(canvas, 0, 14, &I_Ok_btn_9x9);
+        canvas_draw_str(canvas, 12, 22, "start/pause");
+
+        canvas_draw_icon(canvas, 0, 24, &I_Ok_btn_9x9);
+        canvas_draw_str(canvas, 12, 32, "long: cycle preset");
+
+        canvas_draw_icon(canvas, 0, 36, &I_ButtonUp_7x4);
+        canvas_draw_icon(canvas, 9, 36, &I_ButtonDown_7x4);
+        canvas_draw_str(canvas, 20, 42, "tap+hold: mode");
+
+        canvas_draw_icon(canvas, 0, 45, &I_ButtonLeft_4x7);
+        canvas_draw_icon(canvas, 7, 45, &I_ButtonRight_4x7);
+        canvas_draw_str(canvas, 20, 52, "tap+hold: delay");
+
+        canvas_draw_icon(canvas, 0, 55, &I_Pin_back_arrow_10x8);
+        canvas_draw_str(canvas, 13, 63, "close");
         return;
     }
 
@@ -473,7 +485,11 @@ static void usb_hid_autofire_render_callback(Canvas* canvas, void* ctx) {
     canvas_draw_str(canvas, 0, 32, mode_str);
     canvas_draw_str(canvas, 0, 42, preset_str);
     canvas_draw_str(canvas, 0, 52, delay_rate_str);
-    canvas_draw_str(canvas, 0, 63, "B hold:help U/D:mode");
+    canvas_draw_icon(canvas, 0, 55, &I_Pin_back_arrow_10x8);
+    canvas_draw_str(canvas, 13, 63, "hold:help");
+    canvas_draw_icon(canvas, 72, 56, &I_ButtonUp_7x4);
+    canvas_draw_icon(canvas, 81, 56, &I_ButtonDown_7x4);
+    canvas_draw_str(canvas, 92, 63, "mode");
 }
 
 static void usb_hid_autofire_input_callback(InputEvent* input_event, void* ctx) {

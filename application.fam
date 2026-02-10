@@ -12,5 +12,6 @@ App(
     ],
     stack_size=1 * 1024,
     fap_icon="usb_hid_autofire.png",
+    fap_icon_assets="assets",
     fap_category="HID",
 )
