@@ -1,17 +1,22 @@
-#include <string.h>
+#include <stdio.h>
 #include <furi.h>
 #include <furi_hal.h>
 #include <gui/gui.h>
 #include <input/input.h>
 #include "version.h"
-#include "tools.h"
 
 // Uncomment to be able to make a screenshot
 //#define USB_HID_AUTOFIRE_SCREENSHOT
 
 typedef enum {
     EventTypeInput,
+    EventTypeTick,
 } EventType;
+
+typedef enum {
+    ClickPhasePress,
+    ClickPhaseRelease,
+} ClickPhase;
 
 typedef struct {
     union {
@@ -20,21 +25,28 @@ typedef struct {
     EventType type;
 } UsbMouseEvent;
 
-bool btn_left_autofire = false;
-uint32_t autofire_delay = 10;
+typedef struct {
+    FuriMessageQueue* event_queue;
+    ViewPort* view_port;
+    Gui* gui;
+    FuriTimer* click_timer;
+    FuriHalUsbInterface* usb_mode_prev;
+    bool active;
+    bool mouse_pressed;
+    uint32_t autofire_delay_ms;
+    ClickPhase click_phase;
+} UsbHidAutofireApp;
 
 static void usb_hid_autofire_render_callback(Canvas* canvas, void* ctx) {
-    UNUSED(ctx);
+    UsbHidAutofireApp* app = ctx;
     char autofire_delay_str[12];
-    //std::string pi = "pi is " + std::to_string(3.1415926);
-    itoa(autofire_delay, autofire_delay_str, 10);
-    //sprintf(autofire_delay_str, "%lu", autofire_delay);
+    snprintf(autofire_delay_str, sizeof(autofire_delay_str), "%lu", (unsigned long)app->autofire_delay_ms);
 
     canvas_clear(canvas);
 
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 0, 10, "USB HID Autofire");
-    canvas_draw_str(canvas, 0, 34, btn_left_autofire ? "<active>" : "<inactive>");
+    canvas_draw_str(canvas, 0, 34, app->active ? "<active>" : "<inactive>");
 
     canvas_set_font(canvas, FontSecondary);
     canvas_draw_str(canvas, 90, 10, "v");
@@ -54,31 +66,95 @@ static void usb_hid_autofire_input_callback(InputEvent* input_event, void* ctx) 
     furi_message_queue_put(event_queue, &event, FuriWaitForever);
 }
 
+static void usb_hid_autofire_timer_callback(void* ctx) {
+    UsbHidAutofireApp* app = ctx;
+    UsbMouseEvent event = {.type = EventTypeTick};
+    furi_message_queue_put(app->event_queue, &event, 0);
+}
+
+static uint32_t usb_hid_autofire_half_delay_ticks(const UsbHidAutofireApp* app) {
+    uint32_t half_delay_ms = app->autofire_delay_ms / 2;
+    if(half_delay_ms == 0) {
+        half_delay_ms = 1;
+    }
+    return furi_ms_to_ticks(half_delay_ms);
+}
+
+static void usb_hid_autofire_schedule_next_tick(UsbHidAutofireApp* app) {
+    furi_timer_start(app->click_timer, usb_hid_autofire_half_delay_ticks(app));
+}
+
+static void usb_hid_autofire_stop(UsbHidAutofireApp* app) {
+    app->active = false;
+    app->click_phase = ClickPhasePress;
+    furi_timer_stop(app->click_timer);
+
+    if(app->mouse_pressed) {
+        furi_hal_hid_mouse_release(HID_MOUSE_BTN_LEFT);
+        app->mouse_pressed = false;
+    }
+}
+
+static void usb_hid_autofire_tick(UsbHidAutofireApp* app) {
+    if(!app->active) {
+        return;
+    }
+
+    if(app->click_phase == ClickPhasePress) {
+        furi_hal_hid_mouse_press(HID_MOUSE_BTN_LEFT);
+        app->mouse_pressed = true;
+        app->click_phase = ClickPhaseRelease;
+    } else {
+        furi_hal_hid_mouse_release(HID_MOUSE_BTN_LEFT);
+        app->mouse_pressed = false;
+        app->click_phase = ClickPhasePress;
+    }
+
+    usb_hid_autofire_schedule_next_tick(app);
+}
+
 int32_t usb_hid_autofire_app(void* p) {
     UNUSED(p);
-    FuriMessageQueue* event_queue = furi_message_queue_alloc(8, sizeof(UsbMouseEvent));
-    furi_check(event_queue);
-    ViewPort* view_port = view_port_alloc();
+    UsbHidAutofireApp app = {
+        .event_queue = NULL,
+        .view_port = NULL,
+        .gui = NULL,
+        .click_timer = NULL,
+        .usb_mode_prev = NULL,
+        .active = false,
+        .mouse_pressed = false,
+        .autofire_delay_ms = 10,
+        .click_phase = ClickPhasePress,
+    };
 
-    FuriHalUsbInterface* usb_mode_prev = furi_hal_usb_get_config();
+    app.event_queue = furi_message_queue_alloc(16, sizeof(UsbMouseEvent));
+    furi_check(app.event_queue);
+    app.view_port = view_port_alloc();
+    furi_check(app.view_port);
+    app.click_timer = furi_timer_alloc(usb_hid_autofire_timer_callback, FuriTimerTypeOnce, &app);
+    furi_check(app.click_timer);
+
+    app.usb_mode_prev = furi_hal_usb_get_config();
 #ifndef USB_HID_AUTOFIRE_SCREENSHOT
     furi_hal_usb_unlock();
     furi_check(furi_hal_usb_set_config(&usb_hid, NULL) == true);
 #endif
 
-    view_port_draw_callback_set(view_port, usb_hid_autofire_render_callback, NULL);
-    view_port_input_callback_set(view_port, usb_hid_autofire_input_callback, event_queue);
+    view_port_draw_callback_set(app.view_port, usb_hid_autofire_render_callback, &app);
+    view_port_input_callback_set(app.view_port, usb_hid_autofire_input_callback, app.event_queue);
 
     // Open GUI and register view_port
-    Gui* gui = furi_record_open(RECORD_GUI);
-    gui_add_view_port(gui, view_port, GuiLayerFullscreen);
+    app.gui = furi_record_open(RECORD_GUI);
+    gui_add_view_port(app.gui, app.view_port, GuiLayerFullscreen);
 
     UsbMouseEvent event;
     while(1) {
-        FuriStatus event_status = furi_message_queue_get(event_queue, &event, 50);
+        FuriStatus event_status = furi_message_queue_get(app.event_queue, &event, 50);
 
         if(event_status == FuriStatusOk) {
-            if(event.type == EventTypeInput) {
+            if(event.type == EventTypeTick) {
+                usb_hid_autofire_tick(&app);
+            } else if(event.type == EventTypeInput) {
                 if(event.input.key == InputKeyBack) {
                     break;
                 }
@@ -89,15 +165,29 @@ int32_t usb_hid_autofire_app(void* p) {
 
                 switch(event.input.key) {
                     case InputKeyOk:
-                        btn_left_autofire = !btn_left_autofire;
+                        if(app.active) {
+                            usb_hid_autofire_stop(&app);
+                        } else {
+                            app.active = true;
+                            app.click_phase = ClickPhasePress;
+                            usb_hid_autofire_tick(&app);
+                        }
                         break;
                     case InputKeyLeft:
-                        if(autofire_delay > 0) {
-                            autofire_delay -= 10;
+                        if(app.autofire_delay_ms > 0) {
+                            app.autofire_delay_ms -= 10;
+                            if(app.active) {
+                                furi_timer_stop(app.click_timer);
+                                usb_hid_autofire_schedule_next_tick(&app);
+                            }
                         }
                         break;
                     case InputKeyRight:
-                        autofire_delay += 10;
+                        app.autofire_delay_ms += 10;
+                        if(app.active) {
+                            furi_timer_stop(app.click_timer);
+                            usb_hid_autofire_schedule_next_tick(&app);
+                        }
                         break;
                     default:
                         break;
@@ -105,23 +195,17 @@ int32_t usb_hid_autofire_app(void* p) {
             }
         }
 
-        if(btn_left_autofire) {
-            furi_hal_hid_mouse_press(HID_MOUSE_BTN_LEFT);
-            // TODO: Don't wait, but use the timer directly to just don't send the release event (see furi_hal_cortex_delay_us)
-            furi_delay_us(autofire_delay * 500);
-            furi_hal_hid_mouse_release(HID_MOUSE_BTN_LEFT);
-            furi_delay_us(autofire_delay * 500);
-        }
-
-        view_port_update(view_port);
+        view_port_update(app.view_port);
     }
 
-    furi_hal_usb_set_config(usb_mode_prev, NULL);
+    usb_hid_autofire_stop(&app);
+    furi_hal_usb_set_config(app.usb_mode_prev, NULL);
 
     // remove & free all stuff created by app
-    gui_remove_view_port(gui, view_port);
-    view_port_free(view_port);
-    furi_message_queue_free(event_queue);
+    gui_remove_view_port(app.gui, app.view_port);
+    view_port_free(app.view_port);
+    furi_message_queue_free(app.event_queue);
+    furi_timer_free(app.click_timer);
 
     return 0;
 }
