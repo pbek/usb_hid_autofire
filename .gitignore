@@ -12,3 +12,5 @@
 
 # Ignore build output directories
 dist/
+
+.firmware
