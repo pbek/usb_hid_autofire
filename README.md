@@ -9,7 +9,11 @@
 
 This is a simple Flipper Zero application to send left-clicks as a USB HID device.
 
-![Screenshot](screenshot.png)
+Main screen:
+![Main screen](docs/screenshots/main-screen-v1.1.png)
+
+Help screen:
+![Help screen](docs/screenshots/help-screen-v1.1.png)
 
 ## Use-case
 
