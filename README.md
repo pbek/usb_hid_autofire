@@ -9,7 +9,20 @@
 
 This is a simple Flipper Zero application to send left-clicks as a USB HID device.
 
-![Screenshot](screenshot.png)
+<table>
+  <tr>
+    <td align="center">
+      <img src="docs/screenshots/main-screen-v1.1.png" alt="Main screen (v1.1)" width="280" />
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/help-screen-v1.1.png" alt="Help screen (v1.1)" width="280" />
+    </td>
+  </tr>
+  <tr>
+    <th align="center">Main screen</th>
+    <th align="center">Help screen</th>
+  </tr>
+</table>
 
 ## Use-case
 
@@ -34,3 +47,50 @@ cd ..
 # Build and launch the application
 ./fbt launch_app APPSRC=usb_hid_autofire
 ```
+
+## Launch On Flipper From WSL
+
+When VS Code runs in `Remote - WSL`, you can deploy and launch the app directly on a
+USB-connected Flipper from WSL.
+
+1. Attach the Flipper USB device to WSL from Windows PowerShell:
+
+```powershell
+usbipd list
+usbipd bind --busid <BUSID>
+usbipd attach --wsl --busid <BUSID>
+```
+
+2. In WSL, verify the device is available:
+
+```shell
+ls /dev/ttyACM*
+```
+
+3. Run launch from the firmware root:
+
+```shell
+./fbt launch APPSRC=applications_user/usb_hid_autofire
+```
+
+If your firmware/toolchain still uses the older launch target, use:
+
+```shell
+./fbt launch_app APPSRC=usb_hid_autofire
+```
+
+### Troubleshooting
+
+- If you see `Permission denied: '/dev/ttyACM0'`, add your user to `dialout` and restart WSL:
+
+```shell
+sudo usermod -aG dialout "$USER"
+```
+
+Then run in Windows PowerShell:
+
+```powershell
+wsl --shutdown
+```
+
+- Close `qFlipper` while launching from WSL, otherwise the serial port may be busy.
