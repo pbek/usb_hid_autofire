@@ -61,13 +61,13 @@ This file captures current repository architecture, runtime contracts, and activ
 
 ## Persistence
 Settings are stored in `APP_DATA_PATH(".settings")` with debounced writes (`500 ms`):
-- `delay`
+- `delay_ms`
 - `mode`
 - `preset`
 - `startup_policy`
 - `last_active`
 
-Current UX keeps startup policy fixed to paused (policy value is still read/applied at startup).
+Current UX always forces startup policy to paused on launch. The persisted `startup_policy` value is saved for future flexibility but is not currently applied at startup.
 
 ## Active Priorities
 ### P2 (Maintainability)
