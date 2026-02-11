@@ -31,7 +31,7 @@ This is a simple Flipper Zero application to send left-clicks as a USB HID devic
 ## Installation
 
 Download the [latest release](https://github.com/pbek/usb_hid_autofire/releases/latest)
-of the *fap* file and put it into the `apps` folder on your SD card of your Flipper Zero. 
+of the _fap_ file and put it into the `apps` folder on your SD card of your Flipper Zero.
 
 ## Building
 

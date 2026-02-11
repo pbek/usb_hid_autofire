@@ -1,6 +1,7 @@
 # Changelog
 
 ## 0.7
+
 - Major internal refactor: split monolithic app into focused modules for app lifecycle, controller logic, HID engine, UI rendering, and settings persistence
 - Replaced delay busy-loop with timer-driven click scheduler and queued event processing for better responsiveness and lower CPU usage
 - Added centralized cleanup path for all setup/exit flows to reliably restore previous USB config and release pressed controls
@@ -14,19 +15,25 @@
 - Updated manifest category to `USB` for consistency with Flipper firmware/app catalog grouping
 
 ## 0.6
+
 - Remove now redundant `itoa` function
 
 ## 0.5
+
 - Fix compatibility with Flipper Zero firmware `0.74.2`
 
 ## 0.4
+
 - Show active/inactive state in primary font (bold)
 
 ## 0.3
+
 - Add a delay between key-presses (with left/right buttons)
 
 ## 0.2
+
 - Update icon
 
 ## 0.1
+
 - Initial release of the USB HID Autofire application
