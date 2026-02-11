@@ -10,7 +10,7 @@ This file captures current repository architecture, runtime contracts, and activ
 - Entry point: `usb_hid_autofire_app` in `usb_hid_autofire.c`
 - App manifest: `application.fam`
 - App category: `USB`
-- Current version: `1.1` (`version.h`)
+- Current version: `0.7` (`version.h`)
 
 ## Current Module Layout
 - `usb_hid_autofire.c`: app lifecycle/orchestration, event loop, centralized cleanup

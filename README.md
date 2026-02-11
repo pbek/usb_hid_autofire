@@ -12,10 +12,10 @@ This is a simple Flipper Zero application to send left-clicks as a USB HID devic
 <table>
   <tr>
     <td align="center">
-      <img src="docs/screenshots/main-screen-v1.1.png" alt="Main screen (v1.1)" width="280" />
+      <img src="docs/screenshots/main-screen-v0.7.png" alt="Main screen (v0.7)" width="280" />
     </td>
     <td align="center">
-      <img src="docs/screenshots/help-screen-v1.1.png" alt="Help screen (v1.1)" width="280" />
+      <img src="docs/screenshots/help-screen-v0.7.png" alt="Help screen (v0.7)" width="280" />
     </td>
   </tr>
   <tr>
