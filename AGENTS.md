@@ -114,3 +114,4 @@ Manual smoke checklist:
 - If timing behavior changes, keep labels and help text unit-accurate.
 - USB config restoration and release-on-stop are non-negotiable safety rules.
 - Keep `AGENTS.md` focused on current state and operating guidance; use `CHANGELOG.md` for completed feature history.
+- To bump the version of the application you need to adapt `VERSION` in `version.h` and `fap_version` in `application.fam`. Semver is used.
