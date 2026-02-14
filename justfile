@@ -64,4 +64,4 @@ launch:
         just firmware-install
     fi
     cd {{ firmwarePath }}
-    nix run nixpkgs#steam-run --impure -- ./fbt launch_app APPSRC={{ projectName }}
+    nix run nixpkgs#steam-run --impure -- ./fbt launch APPSRC={{ projectName }}
