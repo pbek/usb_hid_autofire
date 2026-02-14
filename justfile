@@ -31,6 +31,10 @@ git-create-patch:
 [group('firmware')]
 firmware-install:
     #!/usr/bin/env bash
+    if [ -d "{{ firmwarePath }}" ]; then
+        echo "Firmware already installed at {{ firmwarePath }}"
+        exit 0
+    fi
     git clone https://github.com/flipperdevices/flipperzero-firmware.git --recursive --depth 1 {{ firmwarePath }}
     cd {{ firmwarePath }}
     ./fbt
@@ -46,6 +50,9 @@ firmware-remove:
 [group('dev')]
 build:
     #!/usr/bin/env bash
+    if [ ! -d "{{ firmwarePath }}" ]; then
+        just firmware-install
+    fi
     cd {{ firmwarePath }}
     nix run nixpkgs#steam-run --impure -- ./fbt fap_{{ projectName }}
 
@@ -53,5 +60,8 @@ build:
 [group('dev')]
 launch:
     #!/usr/bin/env bash
+    if [ ! -d "{{ firmwarePath }}" ]; then
+        just firmware-install
+    fi
     cd {{ firmwarePath }}
     nix run nixpkgs#steam-run --impure -- ./fbt launch_app APPSRC={{ projectName }}
