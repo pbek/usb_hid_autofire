@@ -6,5 +6,10 @@ inputs:
     url: github:pbek/nix-shared
     flake: false
 
+  git-hooks:
+    url: github:cachix/git-hooks.nix
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
 imports:
   - shared/common
