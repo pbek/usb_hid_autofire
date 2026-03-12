@@ -28,5 +28,5 @@ jobs:
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
       - name: 🔧 Install devenv.sh
         run: nix profile add nixpkgs#devenv
-      - name: 🔨 Build the devenv shell and run any pre-commit hooks
-        run: devenv test
+      - name: 🔨 Run Formatting checks
+        run: devenv shell "just format"
